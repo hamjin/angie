@@ -3095,6 +3095,13 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
     }
 #endif
 
+#if (T_NGX_XQUIC)
+    if (r->xqstream) {
+        ngx_http_close_request(r, 0);
+        return;
+    }
+#endif
+
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
     if (r->main->count != 1) {
@@ -3315,6 +3322,19 @@ ngx_http_test_reading(ngx_http_request_t *r)
     if (c->quic) {
         if (rev->error) {
             c->error = 1;
+            err = 0;
+            goto closed;
+        }
+
+        return;
+    }
+
+#endif
+
+#if (T_NGX_XQUIC)
+
+    if (r->xqstream) {
+        if (c->error) {
             err = 0;
             goto closed;
         }
@@ -4043,6 +4063,13 @@ ngx_http_close_request(ngx_http_request_t *r, ngx_int_t rc)
     }
 #endif
 
+#if (T_NGX_XQUIC)
+    if (r->xqstream) {
+        ngx_http_v3_close_stream(r->xqstream, rc);
+        return;
+    }
+#endif
+
     ngx_http_free_request(r, rc);
     ngx_http_close_connection(c);
 }
@@ -4363,6 +4390,17 @@ ngx_http_log_error_handler(ngx_http_request_t *r, ngx_http_request_t *sr,
     return buf;
 }
 
+#if (T_NGX_XQUIC)
+
+ngx_int_t
+ngx_http_find_virtual_server_inner(ngx_connection_t *c,
+    ngx_http_virtual_names_t *virtual_names, ngx_str_t *host,
+    ngx_http_request_t *r, ngx_http_core_srv_conf_t **cscfp)
+{
+    return ngx_http_find_virtual_server(c, virtual_names, host, r, cscfp);
+}
+
+#endif
 
 #if (NGX_API)
 

@@ -3402,7 +3402,13 @@ done:
         return rc;
     }
 
+#if (T_NGX_XQUIC)
+	if (!c->xquic_conn) {
+		SSL_free(c->ssl->connection);
+	}
+#else
     SSL_free(c->ssl->connection);
+#endif
     c->ssl = NULL;
     c->recv = ngx_recv;
 

@@ -26,6 +26,21 @@ typedef struct {
 
 #endif
 
+#if (T_NGX_XQUIC)
+
+extern ngx_atomic_t  *ngx_stat_quic_conns;
+extern ngx_atomic_t  *ngx_stat_quic_cps_nexttime;
+extern ngx_atomic_t  *ngx_stat_quic_cps;
+extern ngx_atomic_t  *ngx_stat_quic_conns_refused;
+
+extern ngx_atomic_t  *ngx_stat_quic_queries;
+extern ngx_atomic_t  *ngx_stat_quic_qps_nexttime;
+extern ngx_atomic_t  *ngx_stat_quic_qps;
+extern ngx_atomic_t  *ngx_stat_quic_queries_refused;
+
+extern ngx_atomic_t  *ngx_stat_quic_concurrent_conns;
+
+#endif
 
 struct ngx_event_s {
     void            *data;

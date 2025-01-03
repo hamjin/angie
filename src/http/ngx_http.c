@@ -1203,6 +1203,12 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
             continue;
         }
 
+#if (T_NGX_XQUIC)
+        if ((port[i].udp && !lsopt->xquic) || (!port[i].udp && lsopt->xquic)) {
+            continue;
+        }
+#endif
+
         /* a port is already in the port list */
 
         return ngx_http_add_addresses(cf, cscf, &port[i], lsopt);
@@ -1219,6 +1225,9 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     port->type = lsopt->type;
     port->port = p;
     port->addrs.elts = NULL;
+#if (T_NGX_XQUIC)
+    port->udp = lsopt->xquic;
+#endif
 
     return ngx_http_add_address(cf, cscf, port, lsopt);
 }
@@ -1239,6 +1248,9 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 #endif
 #if (NGX_HTTP_V3)
     ngx_uint_t             quic;
+#endif
+#if (T_NGX_XQUIC)
+    ngx_uint_t             xquic;
 #endif
 
     /*
@@ -1283,6 +1295,11 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 #endif
 #if (NGX_HTTP_V3)
         quic = lsopt->quic || addr[i].opt.quic;
+#endif
+#if (T_NGX_XQUIC)
+        xquic = lsopt->xquic || addr[i].opt.xquic;
+        protocols |= lsopt->xquic << 3;
+        protocols_prev |= addr[i].opt.xquic << 3;
 #endif
 
         if (lsopt->set) {
@@ -1373,6 +1390,9 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 #endif
 #if (NGX_HTTP_V3)
         addr[i].opt.quic = quic;
+#endif
+#if (T_NGX_XQUIC)
+        addr[i].opt.xquic = xquic;
 #endif
 
         return NGX_OK;
@@ -1882,6 +1902,14 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
     ls->quic = addr->opt.quic;
 #endif
 
+#if (T_NGX_XQUIC)
+    ls->xquic = addr->opt.xquic;
+    if (ls->xquic) {
+        ls->type = SOCK_DGRAM;
+        ls->wildcard = addr->opt.wildcard;
+    }
+#endif
+
     return ls;
 }
 
@@ -1916,6 +1944,9 @@ ngx_http_add_addrs(ngx_conf_t *cf, ngx_http_port_t *hport,
 #endif
 #if (NGX_HTTP_V3)
         addrs[i].conf.quic = addr[i].opt.quic;
+#endif
+#if (T_NGX_XQUIC)
+        addrs[i].conf.xquic = addr[i].opt.xquic;
 #endif
         addrs[i].conf.proxy_protocol = addr[i].opt.proxy_protocol;
 
@@ -1984,6 +2015,9 @@ ngx_http_add_addrs6(ngx_conf_t *cf, ngx_http_port_t *hport,
 #endif
 #if (NGX_HTTP_V3)
         addrs6[i].conf.quic = addr[i].opt.quic;
+#endif
+#if (T_NGX_XQUIC)
+        addrs6[i].conf.xquic = addr[i].opt.xquic;
 #endif
         addrs6[i].conf.proxy_protocol = addr[i].opt.proxy_protocol;
 

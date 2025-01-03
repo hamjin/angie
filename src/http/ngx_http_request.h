@@ -104,6 +104,7 @@
 #define NGX_HTTP_REQUEST_URI_TOO_LARGE     414
 #define NGX_HTTP_UNSUPPORTED_MEDIA_TYPE    415
 #define NGX_HTTP_RANGE_NOT_SATISFIABLE     416
+#define NGX_HTTP_REQUEST_LIMITED           420
 #define NGX_HTTP_MISDIRECTED_REQUEST       421
 #define NGX_HTTP_TOO_MANY_REQUESTS         429
 
@@ -462,6 +463,9 @@ struct ngx_http_request_s {
     ngx_http_connection_t            *http_connection;
     ngx_http_v2_stream_t             *stream;
     ngx_http_v3_parse_t              *v3_parse;
+#if (T_NGX_XQUIC)
+    ngx_http_v3_stream_t             *xqstream;
+#endif
 
     ngx_http_log_handler_pt           log_handler;
 

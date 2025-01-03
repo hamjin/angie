@@ -77,7 +77,30 @@ ngx_atomic_t         *ngx_stat_waiting = &ngx_stat_waiting0;
 
 #endif
 
+#if (T_NGX_XQUIC)
 
+ngx_atomic_t   ngx_stat_quic_conns0;
+ngx_atomic_t  *ngx_stat_quic_conns = &ngx_stat_quic_conns0;
+ngx_atomic_t   ngx_stat_quic_cps_nexttime0;
+ngx_atomic_t  *ngx_stat_quic_cps_nexttime = &ngx_stat_quic_cps_nexttime0;
+ngx_atomic_t   ngx_stat_quic_cps0;
+ngx_atomic_t  *ngx_stat_quic_cps = &ngx_stat_quic_cps0;
+ngx_atomic_t   ngx_stat_quic_conns_refused0;
+ngx_atomic_t  *ngx_stat_quic_conns_refused = &ngx_stat_quic_conns_refused0;
+
+ngx_atomic_t   ngx_stat_quic_queries0;
+ngx_atomic_t  *ngx_stat_quic_queries = &ngx_stat_quic_queries0;
+ngx_atomic_t   ngx_stat_quic_qps_nexttime0;
+ngx_atomic_t  *ngx_stat_quic_qps_nexttime = &ngx_stat_quic_qps_nexttime0;
+ngx_atomic_t   ngx_stat_quic_qps0;
+ngx_atomic_t  *ngx_stat_quic_qps = &ngx_stat_quic_qps0;
+ngx_atomic_t   ngx_stat_quic_queries_refused0;
+ngx_atomic_t  *ngx_stat_quic_queries_refused = &ngx_stat_quic_queries_refused0;
+
+ngx_atomic_t   ngx_stat_quic_concurrent_conns0;
+ngx_atomic_t  *ngx_stat_quic_concurrent_conns = &ngx_stat_quic_concurrent_conns0;
+
+#endif
 
 static ngx_command_t  ngx_events_commands[] = {
 
@@ -567,6 +590,20 @@ ngx_event_module_init(ngx_cycle_t *cycle)
 
 #endif
 
+#if (T_NGX_XQUIC)
+
+    size += cl          /* ngx_stat_quic_conns */
+            + cl        /* ngx_stat_quic_cps_nexttime */
+            + cl        /* ngx_stat_quic_cps */
+            + cl        /* ngx_stat_quic_conns_refused */
+            + cl        /* ngx_stat_quic_queries */
+            + cl        /* ngx_stat_quic_qps_nexttime */
+            + cl        /* ngx_stat_quic_qps */
+            + cl        /* ngx_stat_quic_queries_refused */
+            + cl;       /* ngx_stat_quic_concurrent_conns */
+
+#endif
+
     shm.size = size;
     ngx_str_set(&shm.name, "angie_shared_zone");
     shm.log = cycle->log;
@@ -597,6 +634,8 @@ ngx_event_module_init(ngx_cycle_t *cycle)
 
     ngx_temp_number = (ngx_atomic_t *) (shared + 2 * cl);
 
+    size_t n = 2;
+
     tp = ngx_timeofday();
 
     ngx_random_number = (tp->msec << 16) + ngx_pid;
@@ -611,6 +650,22 @@ ngx_event_module_init(ngx_cycle_t *cycle)
     ngx_stat_writing = (ngx_atomic_t *) (shared + 8 * cl);
     ngx_stat_waiting = (ngx_atomic_t *) (shared + 9 * cl);
 
+    n += 7;
+#endif
+
+#if (T_NGX_XQUIC)
+
+    ngx_stat_quic_conns = (ngx_atomic_t *) (shared + (n + 1) * cl);
+    ngx_stat_quic_cps_nexttime = (ngx_atomic_t *) (shared + (n + 2) * cl);
+    ngx_stat_quic_cps = (ngx_atomic_t *) (shared + (n + 3) * cl);
+    ngx_stat_quic_conns_refused = (ngx_atomic_t *) (shared + (n + 4) * cl);
+    ngx_stat_quic_queries = (ngx_atomic_t *) (shared + (n + 5) * cl);
+    ngx_stat_quic_qps_nexttime = (ngx_atomic_t *) (shared + (n + 6) * cl);
+    ngx_stat_quic_qps = (ngx_atomic_t *) (shared + (n + 7) * cl);
+    ngx_stat_quic_queries_refused = (ngx_atomic_t *) (shared + (n + 8) * cl);
+    ngx_stat_quic_concurrent_conns = (ngx_atomic_t * ) (shared + (n + 9) * cl);
+
+    n += 9;
 #endif
 
     return NGX_OK;

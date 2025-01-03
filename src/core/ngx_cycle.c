@@ -85,6 +85,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     cycle->pool = pool;
     cycle->log = log;
+#if (T_NGX_XQUIC)
+    cycle->x_log = &cycle->xquic_log;
+#endif
     cycle->old_cycle = old_cycle;
 
     cycle->conf_prefix.len = old_cycle->conf_prefix.len;

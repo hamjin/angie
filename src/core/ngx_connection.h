@@ -66,7 +66,9 @@ struct ngx_listening_s {
     unsigned            shared:1;    /* shared between threads or processes */
     unsigned            addr_ntop:1;
     unsigned            wildcard:1;
-
+#if (T_NGX_XQUIC)
+    unsigned            xquic:1;
+#endif
 #if (NGX_HAVE_INET6)
     unsigned            ipv6only:1;
 #endif
@@ -200,6 +202,10 @@ struct ngx_connection_s {
 
 #if (NGX_THREADS || NGX_COMPAT)
     ngx_thread_task_t  *sendfile_task;
+#endif
+
+#if (T_NGX_XQUIC)
+    unsigned            xquic_conn:1;
 #endif
 };
 

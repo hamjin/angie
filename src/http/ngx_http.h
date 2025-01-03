@@ -23,6 +23,9 @@ typedef struct ngx_http_v2_stream_s   ngx_http_v2_stream_t;
 typedef struct ngx_http_v3_parse_s    ngx_http_v3_parse_t;
 typedef struct ngx_http_v3_session_s  ngx_http_v3_session_t;
 typedef struct ngx_http_v3_settings_s ngx_http_v3_settings_t;
+#if (T_NGX_XQUIC)
+typedef struct ngx_http_v3_stream_s  ngx_http_v3_stream_t;
+#endif
 
 typedef ngx_int_t (*ngx_http_header_handler_pt)(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
@@ -38,6 +41,9 @@ typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
 #include <ngx_http_upstream_round_robin.h>
 #include <ngx_http_core_module.h>
 
+#if (T_NGX_XQUIC)
+#include <ngx_http_xquic.h>
+#endif
 #if (NGX_HTTP_V2)
 #include <ngx_http_v2.h>
 #endif

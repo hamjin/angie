@@ -87,6 +87,9 @@ typedef struct {
 #if (NGX_HAVE_INET6)
     unsigned                   ipv6only:1;
 #endif
+#if (T_NGX_XQUIC)
+    unsigned                   xquic:1;
+#endif
     unsigned                   deferred_accept:1;
     unsigned                   reuseport:1;
     unsigned                   so_keepalive:2;
@@ -340,7 +343,9 @@ struct ngx_http_addr_conf_s {
     ngx_http_core_srv_conf_t  *default_server;
 
     ngx_http_virtual_names_t  *virtual_names;
-
+#if (T_NGX_XQUIC)
+    unsigned                   xquic:1;
+#endif
     unsigned                   ssl:1;
     unsigned                   http2:1;
     unsigned                   quic:1;
@@ -376,6 +381,9 @@ typedef struct {
     ngx_int_t                  type;
     in_port_t                  port;
     ngx_array_t                addrs;     /* array of ngx_http_conf_addr_t */
+#if (T_NGX_XQUIC)
+    unsigned                   udp:1;
+#endif
 } ngx_http_conf_port_t;
 
 

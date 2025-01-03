@@ -33,6 +33,9 @@ volatile ngx_str_t       ngx_cached_http_time;
 volatile ngx_str_t       ngx_cached_http_log_time;
 volatile ngx_str_t       ngx_cached_http_log_iso8601;
 volatile ngx_str_t       ngx_cached_syslog_time;
+#if (T_NGX_XQUIC)
+volatile ngx_str_t       ngx_cached_xquic_log_time;
+#endif
 
 #if !(NGX_WIN32)
 
@@ -56,7 +59,10 @@ static u_char            cached_http_log_iso8601[NGX_TIME_SLOTS]
                                     [sizeof("1970-09-28T12:00:00+06:00")];
 static u_char            cached_syslog_time[NGX_TIME_SLOTS]
                                     [sizeof("Sep 28 12:00:00")];
-
+#if (T_NGX_XQUIC)
+static u_char            cached_xquic_log_time[NGX_TIME_SLOTS]
+                                    [sizeof("1970/09/28 12:00:00.000|1426141364883")];
+#endif
 
 static char  *week[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 static char  *months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -70,6 +76,9 @@ ngx_time_init(void)
     ngx_cached_http_log_time.len = sizeof("28/Sep/1970:12:00:00 +0600") - 1;
     ngx_cached_http_log_iso8601.len = sizeof("1970-09-28T12:00:00+06:00") - 1;
     ngx_cached_syslog_time.len = sizeof("Sep 28 12:00:00") - 1;
+#if (T_NGX_XQUIC)
+    ngx_cached_xquic_log_time.len = sizeof("1970/09/28 12:00:00.000|1426141364883") -1;
+#endif
 
     ngx_cached_time = &cached_time[0];
 
@@ -86,6 +95,9 @@ ngx_time_update(void)
     ngx_uint_t       msec;
     ngx_time_t      *tp;
     struct timeval   tv;
+#if (T_NGX_XQUIC)
+    u_char          *p5;
+#endif
 
     if (!ngx_trylock(&ngx_time_lock)) {
         return;
@@ -179,6 +191,15 @@ ngx_time_update(void)
                        months[tm.ngx_tm_mon - 1], tm.ngx_tm_mday,
                        tm.ngx_tm_hour, tm.ngx_tm_min, tm.ngx_tm_sec);
 
+#if (T_NGX_XQUIC)
+    p5 = &cached_xquic_log_time[slot][0];
+
+    (void) ngx_sprintf(p5, "%4d/%02d/%02d %02d:%02d:%02d.%03d|%013ui",
+                       tm.ngx_tm_year, tm.ngx_tm_mon,
+                       tm.ngx_tm_mday, tm.ngx_tm_hour,
+                       tm.ngx_tm_min, tm.ngx_tm_sec, msec, ngx_current_msec);
+#endif
+
     ngx_memory_barrier();
 
     ngx_cached_time = tp;
@@ -187,6 +208,9 @@ ngx_time_update(void)
     ngx_cached_http_log_time.data = p2;
     ngx_cached_http_log_iso8601.data = p3;
     ngx_cached_syslog_time.data = p4;
+#if (T_NGX_XQUIC)
+    ngx_cached_xquic_log_time.data = p5;
+#endif
 
     ngx_unlock(&ngx_time_lock);
 }

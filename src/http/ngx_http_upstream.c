@@ -593,6 +593,13 @@ ngx_http_upstream_init(ngx_http_request_t *r)
     }
 #endif
 
+#if (T_NGX_XQUIC)
+    if (r->xqstream) {
+        ngx_http_upstream_init_request(r);
+        return;
+    }
+#endif
+
     if (r->internal_client) {
         ngx_http_upstream_init_request(r);
         return;
@@ -1480,6 +1487,12 @@ ngx_http_upstream_check_broken_connection(ngx_http_request_t *r,
         return;
     }
 
+#endif
+
+#if (T_NGX_XQUIC)
+    if (r->xqstream) {
+        return;
+    }
 #endif
 
 #if (NGX_HAVE_KQUEUE)
