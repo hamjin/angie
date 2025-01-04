@@ -81,6 +81,9 @@ if [ "$NGX_SYSTEM" = "Darwin" ]; then
     CFLAGS="$CFLAGS -Wno-deprecated-declarations"
 fi
 
+# sign compare
+CFLAGS="$CFLAGS -Wno-sign-compare"
+
 # stop on warning
 CFLAGS="$CFLAGS -Werror"
 
