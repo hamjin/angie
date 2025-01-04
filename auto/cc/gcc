@@ -159,7 +159,7 @@ esac
 CFLAGS="$CFLAGS -Werror"
 
 # debug
-CFLAGS="$CFLAGS -g"
+[ "$NGX_DEBUG" = "YES" ] && CFLAGS="$CFLAGS -g"
 
 # DragonFly's gcc3 generates DWARF
 #CFLAGS="$CFLAGS -g -gstabs"

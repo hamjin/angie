@@ -88,7 +88,7 @@ CFLAGS="$CFLAGS -Wno-sign-compare"
 CFLAGS="$CFLAGS -Werror"
 
 # debug
-CFLAGS="$CFLAGS -g"
+[ "$NGX_DEBUG" = "YES" ] && CFLAGS="$CFLAGS -g"
 
 if [ ".$CPP" = "." ]; then
     CPP="$CC -E"
