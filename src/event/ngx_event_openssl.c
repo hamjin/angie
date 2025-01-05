@@ -10,6 +10,8 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
+#include <openssl/ssl.h>
+#include <zlib.h>
 
 #define NGX_SSL_PASSWORD_BUFFER_SIZE  4096
 
@@ -143,6 +145,49 @@ int  ngx_ssl_ocsp_index;
 int  ngx_ssl_index;
 int  ngx_ssl_certificate_name_index;
 
+#ifndef OPENSSL_NO_CERT_COMPRESSION
+static int zlib_compress(SSL *s,
+                     const unsigned char *in, size_t inlen,
+                     unsigned char *out, size_t *outlen)
+{
+
+    if (out == NULL) {
+        *outlen = compressBound(inlen);
+        return 1;
+    }
+
+    if (compress2(out, outlen, in, inlen, Z_DEFAULT_COMPRESSION) != Z_OK)
+        return 0;
+
+    return 1;
+}
+
+static int zlib_decompress(SSL *s,
+                        const unsigned char *in, size_t inlen,
+                        unsigned char *out, size_t outlen)
+{
+    size_t len = outlen;
+
+    if (uncompress(out, &len, in, inlen) != Z_OK)
+        return 0;
+
+    if (len != outlen)
+        return 0;
+
+    return 1;
+}
+
+typedef int (*SSL_cert_compress_cb_fn)(SSL *s,
+                                       const unsigned char *in, size_t inlen,
+                                       unsigned char *out, size_t *outlen);
+typedef int (*SSL_cert_decompress_cb_fn)(SSL *s,
+                                         const unsigned char *in, size_t inlen,
+                                         unsigned char *out, size_t outlen);
+
+int SSL_add_cert_compression_alg(SSL *s, int alg_id,
+                                  SSL_cert_compress_cb_fn compress,
+                                  SSL_cert_decompress_cb_fn decompress);
+#endif
 
 ngx_int_t
 ngx_ssl_init(ngx_log_t *log)
@@ -416,6 +461,11 @@ ngx_ssl_create(ngx_ssl_t *ssl, ngx_uint_t protocols, void *data)
 
 #ifdef SSL_MODE_NO_AUTO_CHAIN
     SSL_CTX_set_mode(ssl->ctx, SSL_MODE_NO_AUTO_CHAIN);
+#endif
+
+#ifndef OPENSSL_NO_CERT_COMPRESSION
+    SSL_CTX_add_cert_compression_alg(ssl->ctx, TLSEXT_cert_compression_zlib,
+                                             zlib_compress, zlib_decompress);
 #endif
 
     SSL_CTX_set_read_ahead(ssl->ctx, 1);
@@ -1742,7 +1792,6 @@ ngx_ssl_new_client_session(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 
     return 0;
 }
-
 
 ngx_int_t
 ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_connection_t *c, ngx_uint_t flags)

@@ -274,6 +274,11 @@ ngx_xquic_engine_init(ngx_cycle_t *cycle)
         }
     }
 
+#ifndef OPENSSL_NO_CERT_COMPRESSION
+    /* enable cert comp */
+    engine_ssl_config->cert_comp = 1;
+#endif
+
     /* create engine */
     qmcf->xquic_engine = xqc_engine_create(XQC_ENGINE_SERVER, &config, engine_ssl_config, 
                                            &ngx_xquic_engine_callback, &ngx_xquic_transport_callbacks, qmcf);
