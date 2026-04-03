@@ -91,23 +91,11 @@ static const char *debug_levels[] = {
 };
 
 
-#if (NGX_HAVE_VARIADIC_MACROS)
-
 void
 ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     const char *fmt, ...)
-
-#else
-
-void
-ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
-    const char *fmt, va_list args)
-
-#endif
 {
-#if (NGX_HAVE_VARIADIC_MACROS)
     va_list      args;
-#endif
     u_char      *p, *last, *msg;
     ssize_t      n;
     ngx_uint_t   wrote_stderr, debug_connection;
@@ -130,17 +118,9 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
     msg = p;
 
-#if (NGX_HAVE_VARIADIC_MACROS)
-
     va_start(args, fmt);
     p = ngx_vslprintf(p, last, fmt, args);
     va_end(args);
-
-#else
-
-    p = ngx_vslprintf(p, last, fmt, args);
-
-#endif
 
     if (err) {
         p = ngx_log_errno(p, last, err);
@@ -209,35 +189,6 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
     (void) ngx_write_console(ngx_stderr, msg, p - msg);
 }
-
-
-#if !(NGX_HAVE_VARIADIC_MACROS)
-
-void ngx_cdecl
-ngx_log_error(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
-    const char *fmt, ...)
-{
-    va_list  args;
-
-    if (log->log_level >= level) {
-        va_start(args, fmt);
-        ngx_log_error_core(level, log, err, fmt, args);
-        va_end(args);
-    }
-}
-
-
-void ngx_cdecl
-ngx_log_debug_core(ngx_log_t *log, ngx_err_t err, const char *fmt, ...)
-{
-    va_list  args;
-
-    va_start(args, fmt);
-    ngx_log_error_core(NGX_LOG_DEBUG, log, err, fmt, args);
-    va_end(args);
-}
-
-#endif
 
 
 void ngx_cdecl
