@@ -168,6 +168,7 @@ ngx_quic_cbs_recv_rcd(ngx_ssl_conn_t *ssl_conn,
         if (b->sync) {
             /* hole */
 
+            *data = NULL;
             *bytes_read = 0;
 
             break;
@@ -178,6 +179,9 @@ ngx_quic_cbs_recv_rcd(ngx_ssl_conn_t *ssl_conn,
 
         break;
     }
+
+    *data = NULL;
+    *bytes_read = 0;
 
     return 1;
 }
