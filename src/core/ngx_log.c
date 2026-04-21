@@ -10,6 +10,17 @@
 #include <ngx_core.h>
 
 
+typedef struct {
+    u_char        *buf;
+    u_char        *last;
+    ngx_uint_t     level;
+    ngx_err_t      err;
+    ngx_uint_t     console;
+} ngx_log_params_t;
+
+
+static u_char *ngx_log_create_message(ngx_log_t *log, ngx_log_params_t *lp,
+    const char *fmt, va_list args);
 static char *ngx_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log);
 static void ngx_log_insert(ngx_log_t *log, ngx_log_t *new_log);
@@ -91,42 +102,45 @@ static const char *debug_levels[] = {
 };
 
 
-void
-ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
-    const char *fmt, ...)
+static u_char *
+ngx_log_create_message(ngx_log_t *log, ngx_log_params_t *lp,
+    const char *fmt, va_list args)
 {
-    va_list      args;
-    u_char      *p, *last, *msg;
-    ssize_t      n;
-    ngx_uint_t   wrote_stderr, debug_connection;
-    u_char       errstr[NGX_MAX_ERROR_STR];
+    u_char  *p, *last;
 
-    last = errstr + NGX_MAX_ERROR_STR;
+    last = lp->last;
 
-    p = ngx_cpymem(errstr, ngx_cached_err_log_time.data,
-                   ngx_cached_err_log_time.len);
+    if (lp->console) {
+        p = ngx_cpymem(lp->buf, "angie:", sizeof("angie:") - 1);
 
-    p = ngx_slprintf(p, last, " [%V] ", &err_levels[level]);
+    } else {
+        p = ngx_cpymem(lp->buf, ngx_cached_err_log_time.data,
+                       ngx_cached_err_log_time.len);
+    }
+
+    p = ngx_slprintf(p, last, " [%V] ", &err_levels[lp->level]);
+
+    if (lp->console) {
+        goto msg;
+    }
 
     /* pid#tid */
     p = ngx_slprintf(p, last, "%P#" NGX_TID_T_FMT ": ",
-                    ngx_log_pid, ngx_log_tid);
+                     ngx_log_pid, ngx_log_tid);
 
     if (log->connection) {
         p = ngx_slprintf(p, last, "*%uA ", log->connection);
     }
 
-    msg = p;
+msg:
 
-    va_start(args, fmt);
     p = ngx_vslprintf(p, last, fmt, args);
-    va_end(args);
 
-    if (err) {
-        p = ngx_log_errno(p, last, err);
+    if (lp->err) {
+        p = ngx_log_errno(p, last, lp->err);
     }
 
-    if (level != NGX_LOG_DEBUG && log->handler) {
+    if (lp->level != NGX_LOG_DEBUG && log->handler) {
         p = log->handler(log, p, last - p);
     }
 
@@ -136,8 +150,36 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
     ngx_linefeed(p);
 
+    return p;
+}
+
+
+void
+ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
+    const char *fmt, ...)
+{
+    va_list            args;
+    u_char            *p;
+    ssize_t            n;
+    ngx_log_t         *head;
+    ngx_uint_t         wrote_stderr, debug_connection;
+    u_char             errstr[NGX_MAX_ERROR_STR];
+    ngx_log_params_t   lp;
+
+    lp.level = level;
+    lp.buf = errstr;
+    lp.last = errstr + NGX_MAX_ERROR_STR;
+    lp.err = err;
+    lp.console = 0;
+
+    va_start(args, fmt);
+    p = ngx_log_create_message(log, &lp, fmt, args);
+    va_end(args);
+
     wrote_stderr = 0;
     debug_connection = (log->log_level & NGX_LOG_DEBUG_CONNECTION) != 0;
+
+    head = log;
 
     while (log) {
 
@@ -183,11 +225,13 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
         return;
     }
 
-    msg -= (7 + err_levels[level].len + 3);
+    lp.console = 1;
 
-    (void) ngx_sprintf(msg, "angie: [%V] ", &err_levels[level]);
+    va_start(args, fmt);
+    p = ngx_log_create_message(head, &lp, fmt, args);
+    va_end(args);
 
-    (void) ngx_write_console(ngx_stderr, msg, p - msg);
+    (void) ngx_write_console(ngx_stderr, errstr, p - errstr);
 }
 
 
