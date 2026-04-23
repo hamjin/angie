@@ -71,6 +71,13 @@ static ngx_command_t  ngx_mail_core_commands[] = {
       0,
       NULL },
 
+    { ngx_string("error_log_user_tag"),
+      NGX_MAIL_MAIN_CONF|NGX_MAIL_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_array_slot,
+      NGX_MAIL_SRV_CONF_OFFSET,
+      offsetof(ngx_mail_core_srv_conf_t, error_log_user_tags),
+      NULL },
+
     { ngx_string("resolver"),
       NGX_MAIL_MAIN_CONF|NGX_MAIL_SRV_CONF|NGX_CONF_1MORE,
       ngx_mail_core_resolver,
@@ -185,6 +192,8 @@ ngx_mail_core_create_srv_conf(ngx_conf_t *cf)
     cscf->file_name = cf->conf_file->file.name.data;
     cscf->line = cf->conf_file->line;
 
+    cscf->error_log_user_tags = NGX_CONF_UNSET_PTR;
+
     return cscf;
 }
 
@@ -224,6 +233,9 @@ ngx_mail_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     ngx_conf_merge_ptr_value(conf->resolver, prev->resolver, NULL);
+
+    ngx_conf_merge_ptr_value(conf->error_log_user_tags,
+                             prev->error_log_user_tags, NULL);
 
     return NGX_CONF_OK;
 }

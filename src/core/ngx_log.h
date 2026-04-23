@@ -167,6 +167,7 @@ ngx_int_t ngx_log_redirect_stderr(ngx_cycle_t *cycle);
 ngx_log_t *ngx_log_get_file_log(ngx_log_t *head);
 ngx_int_t ngx_log_get_level(u_char *level);
 char *ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head);
+void ngx_log_add_str_tag(ngx_log_t *log, ngx_str_t *s);
 
 u_char *ngx_log_action(ngx_log_t *log, u_char *buf, u_char *last,
     const char *action);
@@ -209,7 +210,15 @@ ngx_basename(const char *filename)
     return base ? (base + 1) : filename;
 }
 
-void ngx_log_add_tag(ngx_log_t *log, const char *s);
+#define ngx_log_add_tag(log, s)                                               \
+    do {                                                                      \
+        ngx_str_t  tmp;                                                       \
+                                                                              \
+        tmp.data = (u_char *) s;                                              \
+        tmp.len = ngx_strlen(s);                                              \
+        ngx_log_add_str_tag(log, &tmp);                                       \
+    } while (0)
+
 
 extern ngx_module_t  ngx_errlog_module;
 extern ngx_uint_t    ngx_use_stderr;

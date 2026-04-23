@@ -85,6 +85,8 @@ static char *ngx_http_core_internal(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_core_resolver(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_http_core_error_log_user_tag(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 #if (NGX_HTTP_GZIP)
 static ngx_int_t ngx_http_gzip_accept_encoding(ngx_str_t *ae);
 static ngx_uint_t ngx_http_gzip_quantity(u_char *p, u_char *last);
@@ -855,6 +857,14 @@ static ngx_command_t  ngx_http_core_commands[] = {
       &ngx_api_http_location_zones_handler },
 
 #endif
+
+    { ngx_string("error_log_user_tag"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_http_core_error_log_user_tag,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
 
       ngx_null_command
 };
@@ -4110,6 +4120,8 @@ ngx_http_core_create_loc_conf(ngx_conf_t *cf)
     clcf->status_zone = NGX_CONF_UNSET_PTR;
 #endif
 
+    clcf->error_log_user_tags = NGX_CONF_UNSET_PTR;
+
     return clcf;
 }
 
@@ -4427,6 +4439,9 @@ ngx_http_core_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 #if (NGX_API)
     ngx_conf_merge_ptr_value(conf->status_zone, prev->status_zone, NULL);
 #endif
+
+    ngx_conf_merge_ptr_value(conf->error_log_user_tags,
+                             prev->error_log_user_tags, NULL);
 
     return NGX_CONF_OK;
 }
@@ -5598,6 +5613,49 @@ ngx_http_core_resolver(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     return NGX_CONF_OK;
 }
+
+
+static char *
+ngx_http_core_error_log_user_tag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_core_loc_conf_t  *clcf = conf;
+
+    ngx_str_t                         *value;
+    ngx_array_t                       *tags;
+    ngx_http_complex_value_t          *cv;
+    ngx_http_compile_complex_value_t   ccv;
+
+    value = cf->args->elts;
+
+    tags = clcf->error_log_user_tags;
+
+    if (tags == NGX_CONF_UNSET_PTR) {
+        tags = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
+        if (tags == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        clcf->error_log_user_tags = tags;
+    }
+
+    cv = ngx_array_push(tags);
+    if (cv == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+
+    ccv.cf = cf;
+    ccv.value = &value[1];
+    ccv.complex_value = cv;
+
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
 
 
 #if (NGX_HTTP_GZIP)

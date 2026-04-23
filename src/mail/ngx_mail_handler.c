@@ -1264,24 +1264,40 @@ ngx_mail_close_connection(ngx_connection_t *c)
 u_char *
 ngx_mail_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
-    u_char              *p, *last;
-    ngx_mail_session_t  *s;
-    ngx_mail_log_ctx_t  *ctx;
+    u_char                    *p, *last;
+    ngx_str_t                 *utags;
+    ngx_uint_t                 i;
+    ngx_mail_session_t        *s;
+    ngx_mail_log_ctx_t        *ctx;
+    ngx_mail_core_srv_conf_t  *cscf;
 
     p = buf;
     last = buf + len;
 
+    ctx = log->data;
+    s = ctx->session;
+
     ngx_log_add_tag(log, "mail");
+
+    if (s) {
+        cscf = ngx_mail_get_module_srv_conf(s, ngx_mail_core_module);
+
+        if (cscf->error_log_user_tags) {
+
+            utags = cscf->error_log_user_tags->elts;
+
+            for (i = 0; i < cscf->error_log_user_tags->nelts; i++) {
+                ngx_log_add_str_tag(log, &utags[i]);
+            }
+        }
+    }
 
     if (log->action) {
         p = ngx_log_action(log, p, last, log->action);
     }
 
-    ctx = log->data;
-
     p = ngx_log_property(log, p, last, "client", "%V", ctx->client);
 
-    s = ctx->session;
 
     if (s == NULL) {
         return p;

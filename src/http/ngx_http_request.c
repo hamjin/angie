@@ -4348,14 +4348,33 @@ ngx_http_log_error_handler(ngx_log_t *log, u_char *buf, u_char *last,
 
     char                      *uri_separator;
     u_char                    *p, *ch;
+    ngx_str_t                  utag;
+    ngx_uint_t                 i;
     ngx_http_request_t        *r, *sr;
     ngx_http_upstream_t       *u;
+    ngx_http_complex_value_t  *ucv;
     ngx_http_core_srv_conf_t  *cscf;
+    ngx_http_core_loc_conf_t  *clcf;
 
     r = ctx->request;
     sr = ctx->current_request;
 
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    if (clcf->error_log_user_tags) {
+
+        ucv = clcf->error_log_user_tags->elts;
+
+        for (i = 0; i < clcf->error_log_user_tags->nelts; i++) {
+
+            if (ngx_http_complex_value(r, &ucv[i], &utag) != NGX_OK) {
+                return buf;
+            }
+
+            ngx_log_add_str_tag(log, &utag);
+        }
+    }
 
     p = ngx_log_property(log, buf, last, "server", "%V", &cscf->server_name);
 

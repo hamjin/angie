@@ -1211,18 +1211,14 @@ ngx_log_filter_rule_match(ngx_log_filter_rule_t *rule, ngx_str_t *str)
 
 
 void
-ngx_log_add_tag(ngx_log_t *log, const char *s)
+ngx_log_add_str_tag(ngx_log_t *log, ngx_str_t *tag)
 {
-    ngx_str_t               tag;
     ngx_uint_t              i;
     ngx_log_filter_rule_t  *rules;
 
     if (log->filter == NULL) {
         return;
     }
-
-    tag.len = ngx_strlen(s);
-    tag.data = (u_char *) s;
 
     rules = log->filter->rules.elts;
 
@@ -1232,7 +1228,7 @@ ngx_log_add_tag(ngx_log_t *log, const char *s)
             continue;
         }
 
-        if (ngx_log_filter_rule_match(&rules[i], &tag) == NGX_OK) {
+        if (ngx_log_filter_rule_match(&rules[i], tag) == NGX_OK) {
             rules[i].match = 1;
         }
     }

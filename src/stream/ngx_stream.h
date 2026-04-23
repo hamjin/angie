@@ -251,6 +251,9 @@ typedef struct {
     ngx_stream_status_zone_t      *status_zone;
 #endif
 
+    ngx_array_t                   *error_log_user_tags;
+                                                  /* array of complex values */
+
     unsigned                       listen:1;
 #if (NGX_PCRE)
     unsigned                       captures:1;
