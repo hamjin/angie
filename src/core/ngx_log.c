@@ -23,6 +23,9 @@ typedef enum {
 typedef enum {
     NGX_LOG_FILTER_LOGLINE,
     NGX_LOG_FILTER_MESSAGE,
+#if (NGX_DEBUG)
+    NGX_LOG_FILTER_FILENAME,
+#endif
 } ngx_log_filter_part_t;
 
 
@@ -34,6 +37,7 @@ typedef struct {
     ngx_uint_t                    console;
     ngx_str_t                     line;
     ngx_str_t                     msg;
+    const char                   *filename;
 } ngx_log_params_t;
 
 
@@ -239,8 +243,8 @@ ngx_log_match_substring(ngx_str_t *haystack, ngx_str_t *needle)
 
 
 void
-ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
-    const char *fmt, ...)
+ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, const char *filename,
+    ngx_err_t err, const char *fmt, ...)
 {
     va_list            args;
     u_char            *p;
@@ -263,6 +267,7 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     lp.console = 0;
     lp.line.len = 0;
     lp.msg.len = 0;
+    lp.filename = filename;
 
     wrote_stderr = 0;
     debug_connection = (log->log_level & NGX_LOG_DEBUG_CONNECTION) != 0;
@@ -980,6 +985,16 @@ ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log, ngx_str_t *value)
         rule->pattern.len = value->len - 8;
         rule->pattern.data = value->data + 8;
 
+    } else if (ngx_strncmp(value->data, "sourcefile:", 11) == 0) {
+
+#if (NGX_DEBUG)
+        rule->part = NGX_LOG_FILTER_FILENAME;
+        rule->pattern.len = value->len - 11;
+        rule->pattern.data = value->data + 11;
+#else
+        return "source file filtering requires debug build";
+#endif
+
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "unknown filter type \"%V\"", value);
@@ -1085,6 +1100,22 @@ ngx_log_filter_apply_rules(ngx_log_t *log, ngx_log_params_t *lp)
             }
 
             continue;
+
+#if (NGX_DEBUG)
+        case NGX_LOG_FILTER_FILENAME:
+            if (lp->filename == NULL) {
+                continue;
+            }
+
+            item.data = (u_char *) lp->filename;
+            item.len = ngx_strlen(lp->filename);
+
+            if (ngx_log_filter_rule_match(&rules[i], &item) != NGX_OK) {
+                return NGX_DECLINED;
+            }
+
+            continue;
+#endif
 
         case NGX_LOG_FILTER_MESSAGE:
             item = lp->msg;

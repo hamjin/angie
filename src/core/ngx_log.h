@@ -42,6 +42,10 @@
 #define NGX_LOG_DEBUG_CONNECTION  0x80000000
 #define NGX_LOG_DEBUG_ALL         0x7ffffff0
 
+#if (!defined(ngx_src_file))
+#define ngx_src_file()            (ngx_basename(__FILE__))
+#endif
+
 
 typedef struct ngx_log_filter_s  ngx_log_filter_t;
 
@@ -92,11 +96,12 @@ struct ngx_log_s {
 #define NGX_HAVE_VARIADIC_MACROS  1
 
 #define ngx_log_error(level, log, ...)                                        \
-    if ((log)->log_level >= level) ngx_log_error_core(level, log, __VA_ARGS__)
+    if ((log)->log_level >= level)                                            \
+        ngx_log_error_core(level, log, ngx_src_file(), __VA_ARGS__)
 
 #define ngx_log_debug(level, log, ...)                                        \
     if ((log)->log_level & level)                                             \
-        ngx_log_error_core(NGX_LOG_DEBUG, log, __VA_ARGS__)
+        ngx_log_error_core(NGX_LOG_DEBUG, log, ngx_src_file(), __VA_ARGS__)
 
 
 #if (NGX_DEBUG)
@@ -151,8 +156,8 @@ struct ngx_log_s {
 #endif
 
 
-void ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
-    const char *fmt, ...);
+void ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, const char *filename,
+    ngx_err_t err, const char *fmt, ...);
 ngx_log_t *ngx_log_init(u_char *prefix, u_char *error_log, ngx_uint_t level);
 void ngx_cdecl ngx_log_abort(ngx_err_t err, const char *fmt, ...);
 void ngx_cdecl ngx_log_stderr(ngx_err_t err, const char *fmt, ...);
@@ -191,6 +196,17 @@ static ngx_inline void
 ngx_write_stdout(char *text)
 {
     (void) ngx_write_fd(ngx_stdout, text, ngx_strlen(text));
+}
+
+
+static ngx_inline const char *
+ngx_basename(const char *filename)
+{
+    const char  *base;
+
+    base = ngx_strrchr(filename, '/');
+
+    return base ? (base + 1) : filename;
 }
 
 
