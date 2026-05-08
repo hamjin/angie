@@ -7,6 +7,16 @@
 
 <changes ver="1.12.0" date="">
 
+<change type="bugfix">
+<para lang="ru">
+при использовании нескольких символов '=' в директиве "metric" обрезался ключ.
+</para>
+<para lang="en">
+when using multiple '=' characters in the "metric" directive,
+the key was truncated.
+</para>
+</change>
+
 <change type="feature">
 <para lang="ru">
 улучшена совместимость с ACME-серверами, не полностью соответствующими

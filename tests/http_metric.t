@@ -144,6 +144,11 @@ http {
     server {
         listen 127.0.0.1:8080;
 
+        location ~ /key_value/(.+)$ {
+            set $metric_var $1;
+            return 200 "$metric_var;$metric_var_key;$metric_var_value";
+        }
+
         location ~ /var1/(.+)/(.+)$ {
             set $metric_var $1=$2;
             return 200 "$metric_var;$metric_var_key;$metric_var_value";
@@ -374,6 +379,22 @@ my %test_cases = (
 			superhashof({}),
 			'api metric tree'
 		);
+	},
+
+	'key value' => sub {
+		like(http_get("/key_value/key==1"),    qr/^key==1;key=;1$/m,
+			'key value 1');
+		like(http_get("/key_value/key==10"),   qr/^key==10;key=;2$/m,
+			'key value 2');
+		like(http_get("/key_value/k=e=y==1"),  qr/^k=e=y==1;k=e=y=;1$/m,
+			'key value 3');
+		like(http_get("/key_value/=k=e=y==1"), qr/^=k=e=y==1;=k=e=y=;1$/m,
+			'key value 4');
+		like(http_get("/key_value/==1"), qr/^==1;=;1$/m,
+			'key value 5');
+		like(http_get("/key_value/=1"),  qr/^;;$/m, 'key value 6');
+		like(http_get("/key_value/="),   qr/^;;$/m, 'key value 7');
+		like(http_get("/key_value/key"), qr/^key;key;1$/m, 'key value 8');
 	},
 
 	'variables' => sub {

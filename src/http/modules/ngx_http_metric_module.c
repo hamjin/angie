@@ -2605,23 +2605,28 @@ static void
 ngx_http_metric_parse_key_value(ngx_str_t *key, ngx_str_t *value,
     ngx_str_t src)
 {
-    key->len = 0;
-    key->data = src.data;
+    u_char  *p;
 
-    while (key->len < src.len) {
+    p = src.data + src.len;
 
-        if (*src.data == '=') {
-            src.len--;
-            src.data++;
+    while (p != src.data) {
+        p--;
 
-            break;
+        if (*p == '=') {
+            key->len = p - src.data;
+            key->data = src.data;
+
+            value->len = src.len - key->len - 1;
+            value->data = p + 1;
+
+            return;
         }
-
-        key->len++;
-        src.data++;
     }
 
-    value->len = src.len - key->len;
+    key->len = src.len;
+    key->data = src.data;
+
+    value->len = 0;
     value->data = src.data;
 }
 
