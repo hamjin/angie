@@ -71,6 +71,8 @@ http {
     metric_zone hist2:128k expire=off histogram inf 2 5 10 0.1 8;
 
     metric_zone var:128k count;
+    metric_zone var2:128k last;
+    metric_zone var3:128k last;
     metric_zone stage1:128k last;
     metric_zone stage2:128k last;
     metric_zone stage3:128k last;
@@ -172,6 +174,26 @@ http {
             set $metric_var_key   $1;
             set $metric_var_value $2;
             return 200 "$metric_var;$metric_var_key;$metric_var_value";
+        }
+
+        location ~ /var3/(.+)/(.*)$ {
+            set $metric_var_key    $1;
+            set $metric_var_value  $2;
+
+            set $metric_var2_key   $1;
+            set $metric_var2_value $2;
+
+            set $metric_var   angie=1;
+            set $metric_var_value  $2;
+
+            set $metric_var_key    $1;
+
+            set $metric_var3_key   bar;
+            set $metric_var3_value 10$2;
+
+            return 200 "$metric_var:$metric_var_key=$metric_var_value
+$metric_var2:$metric_var2_key=$metric_var2_value
+$metric_var3:$metric_var3_key=$metric_var3_value";
         }
 
         location /stage/request1/ {
@@ -507,7 +529,7 @@ my %test_cases = (
 	'key value' => sub {
 		like(http_get("/key_value/key==1"),    qr/^key==1;key=;1$/m,
 			'key value 1');
-		like(http_get("/key_value/key==10"),   qr/^key==10;key=;2$/m,
+		like(http_get("/key_value/key==10"),   qr/^key==2;key=;2$/m,
 			'key value 2');
 		like(http_get("/key_value/k=e=y==1"),  qr/^k=e=y==1;k=e=y=;1$/m,
 			'key value 3');
@@ -517,31 +539,41 @@ my %test_cases = (
 			'key value 5');
 		like(http_get("/key_value/=1"),  qr/^;;$/m, 'key value 6');
 		like(http_get("/key_value/="),   qr/^;;$/m, 'key value 7');
-		like(http_get("/key_value/key"), qr/^key;key;1$/m, 'key value 8');
+		like(http_get("/key_value/key"), qr/^key=1;key;1$/m, 'key value 8');
 	},
 
 	'variables' => sub {
-		like(http_get("/var1/angie/tt"),  qr/^angie=tt;angie;1$/m,
+		like(http_get("/var1/angie/tt"),  qr/^angie=1;angie;1$/m,
 			'variables 1 - 1');
-		like(http_get("/var1/angie/-1"),  qr/^angie=-1;angie;2$/m,
+		like(http_get("/var1/angie/-1"),  qr/^angie=2;angie;2$/m,
 			'variables 1 - 2');
-		like(http_get("/var1/angie/0.1"), qr/^angie=0\.1;angie;3$/m,
+		like(http_get("/var1/angie/0.1"), qr/^angie=3;angie;3$/m,
 			'variables 1 - 3');
-		like(http_get("/var1/foo/11"),    qr/^foo=11;foo;1$/m,
+		like(http_get("/var1/foo/11"),    qr/^foo=1;foo;1$/m,
 			'variables 1 - 4');
-		like(http_get("/var1/foo/0"),     qr/^foo=0;foo;2$/m,
+		like(http_get("/var1/foo/0"),     qr/^foo=2;foo;2$/m,
 			'variables 1 - 5');
 
-		like(http_get("/var2/angie/tt"),  qr/^angie=tt;angie;4$/m,
+		like(http_get("/var2/angie/tt"),  qr/^angie=4;angie;4$/m,
 			'variables 2 - 1');
-		like(http_get("/var2/angie/-1"),  qr/^angie=-1;angie;5$/m,
+		like(http_get("/var2/angie/-1"),  qr/^angie=5;angie;5$/m,
 			'variables 2 - 2');
-		like(http_get("/var2/angie/0.1"), qr/^angie=0\.1;angie;6$/m,
+		like(http_get("/var2/angie/0.1"), qr/^angie=6;angie;6$/m,
 			'variables 2 - 3');
-		like(http_get("/var2/foo/11"),    qr/^foo=11;foo;3$/m,
+		like(http_get("/var2/foo/11"),    qr/^foo=3;foo;3$/m,
 			'variables 2 - 4');
-		like(http_get("/var2/foo/0"),     qr/^foo=0;foo;4$/m,
+		like(http_get("/var2/foo/0"),     qr/^foo=4;foo;4$/m,
 			'variables 2 - 5');
+
+		like(http_get("/var3/foo/1"),
+			qr/^foo=5:foo=5\nfoo=1:foo=1\nbar=101:bar=101$/m,
+			'variables 3 - 1');
+		like(http_get("/var3/foo/2"),
+			qr/^foo=6:foo=6\nfoo=2:foo=2\nbar=102:bar=102$/m,
+			'variables 3 - 2');
+		like(http_get("/var3/foo/3"),
+			qr/^foo=7:foo=7\nfoo=3:foo=3\nbar=103:bar=103$/m,
+			'variables 3 - 3');
 	},
 
 	'stage' => sub {
