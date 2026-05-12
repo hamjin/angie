@@ -647,17 +647,18 @@ ngx_stream_log_error(ngx_log_t *log, u_char *buf, size_t len)
         p = ngx_log_action(log, p, last, log->action);
     }
 
-    p = ngx_log_property(log, p, last, "client", "%V",
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(CLIENT), "%V",
                          &s->connection->addr_text);
 
-    p = ngx_log_property(log, p, last, "server", "%V",
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(SERVER), "%V",
                          &s->connection->listening->addr_text);
 
-    p = ngx_log_property(log, p, last, "protocol", "%s",
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(PROTOCOL), "%s",
                          s->connection->type == SOCK_DGRAM ? "udp" : "tcp");
 
     if (s->log_handler) {
-        p = ngx_log_object(log, p, last, "stream_session", s->log_handler, s);
+        p = ngx_log_object(log, p, last, ngx_stream_log_prop(SESSION),
+                           s->log_handler, s);
     }
 
     return p;

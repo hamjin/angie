@@ -426,7 +426,8 @@ ngx_syslog_log_error(ngx_log_t *log, u_char *buf, size_t len)
     peer = log->data;
 
     if (peer) {
-        p = ngx_log_property(log, p, last, "server", "%V", &peer->server.name);
+        p = ngx_log_property(log, p, last, ngx_core_log_prop(SYSLOG_SERVER),
+                             "%V", &peer->server.name);
     }
 
     return p;

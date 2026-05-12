@@ -47,6 +47,44 @@
 #endif
 
 
+#if (NGX_SSL)
+#define NGX_HAS_SSL(x) x
+#else
+#define NGX_HAS_SSL(x)
+#endif
+
+#define NGX_CORE_LOG_PROP_LIST                                                \
+    NGX_X(RESOLVER,                   "resolver"     , "resolver")            \
+    NGX_X(SYSLOG_SERVER,              "syslog_server", "syslog server")       \
+    NGX_X(LISTEN_ADDR,                "listen_addr",   "listen addr")         \
+    NGX_HAS_SSL(NGX_X(OCSP_RESPONDER, "responder",     "responder"))          \
+    NGX_HAS_SSL(NGX_X(OCSP_PEER,      "peer",          "peer"))               \
+    NGX_HAS_SSL(NGX_X(OCSP_CERT,      "certificate",   "certificate"))
+
+
+enum {
+    #define NGX_X(id, key, name)  NGX_CORE_LOG_PROP__##id,
+    NGX_CORE_LOG_PROP_LIST
+    #undef NGX_X
+};
+
+typedef struct {
+    ngx_uint_t           index;
+    ngx_str_t            key;
+    ngx_str_t            name;
+    const char          *module;
+} ngx_log_property_t;
+
+/*
+ * wrapper type to use with ngx_log_property(), prohibits
+ * accidentall passing of unrelated integer while logging
+ */
+typedef struct {
+    ngx_uint_t           id;
+} ngx_log_property_key_t;
+
+typedef struct ngx_log_conf_s  ngx_log_conf_t;
+
 typedef struct ngx_log_filter_s  ngx_log_filter_t;
 
 typedef u_char *(*ngx_log_handler_pt) (ngx_log_t *log, u_char *buf, size_t len);
@@ -81,6 +119,7 @@ struct ngx_log_s {
     ngx_log_t           *next;
 
     ngx_log_filter_t    *filter;
+    ngx_log_conf_t      *conf;
 
     /* only meaningful during the call on the first log in list */
     ngx_uint_t           busy; /* unsigned busy:1; */
@@ -169,13 +208,22 @@ ngx_int_t ngx_log_get_level(u_char *level);
 char *ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head);
 void ngx_log_add_str_tag(ngx_log_t *log, ngx_str_t *s);
 
+
+#define ngx_core_log_prop(id)                                                 \
+    ((ngx_log_property_key_t)                                                 \
+     { ngx_core_log_properties[NGX_CORE_LOG_PROP__##id].index })
+
+#define ngx_log_prop_decl(key, name, module)                                  \
+    { 0, ngx_string(key), ngx_string(name), module}
+
+ngx_int_t ngx_log_add_property(ngx_cycle_t *cycle, ngx_log_property_t *prop);
 u_char *ngx_log_action(ngx_log_t *log, u_char *buf, u_char *last,
     const char *action);
 u_char *ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last,
-    const char *key, const char *fmt, ...);
+    ngx_log_property_key_t key, const char *fmt, ...);
 u_char *ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last,
-    const char *key, ngx_log_ext_handler_pt handler, void *data);
-
+    ngx_log_property_key_t key, ngx_log_ext_handler_pt handler, void *data);
+void ngx_show_log_filters_info(ngx_cycle_t *cycle);
 
 /*
  * ngx_write_stderr() cannot be implemented as macro, since
@@ -222,6 +270,7 @@ ngx_basename(const char *filename)
 
 extern ngx_module_t  ngx_errlog_module;
 extern ngx_uint_t    ngx_use_stderr;
+extern ngx_log_property_t  ngx_core_log_properties[];
 
 
 #endif /* _NGX_LOG_H_INCLUDED_ */

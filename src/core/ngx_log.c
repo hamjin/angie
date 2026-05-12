@@ -32,6 +32,19 @@ typedef enum {
 
 
 typedef struct {
+    ngx_log_t                    *log;
+    ngx_str_t                     name;
+    ngx_uint_t                    line;
+} ngx_log_ref_t;
+
+
+struct ngx_log_conf_s {
+    ngx_array_t                   props;
+    ngx_array_t                   logs;
+};
+
+
+typedef struct {
     u_char                       *buf;
     u_char                       *last;
     ngx_uint_t                    level;
@@ -46,6 +59,7 @@ typedef struct {
 typedef struct {
     ngx_str_t                     pattern;
     ngx_str_t                     field;
+    ngx_uint_t                    prop_idx;
     ngx_log_filter_part_t         part;
     ngx_log_filter_match_type_t   type;
 #if (NGX_PCRE)
@@ -77,6 +91,11 @@ static ngx_int_t ngx_log_filter_apply_rules(ngx_log_t *log,
 static ngx_int_t ngx_log_filter_rule_match(ngx_log_filter_rule_t *rule,
     ngx_str_t *str);
 static u_char *ngx_log_match_substring(ngx_str_t *haystack, ngx_str_t *needle);
+static ngx_int_t ngx_log_conf_add_property(ngx_log_conf_t *lcf, ngx_log_t *log,
+    ngx_log_property_t *prop);
+
+static void *ngx_log_create_conf(ngx_cycle_t *cycle);
+static char *ngx_log_init_conf(ngx_cycle_t *cycle, void *conf);
 
 #if (NGX_DEBUG)
 
@@ -110,8 +129,8 @@ static ngx_command_t  ngx_errlog_commands[] = {
 
 static ngx_core_module_t  ngx_errlog_module_ctx = {
     ngx_string("errlog"),
-    NULL,
-    NULL
+    ngx_log_create_conf,
+    ngx_log_init_conf
 };
 
 
@@ -152,6 +171,14 @@ static const char *debug_levels[] = {
     "debug_core", "debug_alloc", "debug_mutex", "debug_event",
     "debug_http", "debug_mail", "debug_stream"
 };
+
+
+ngx_log_property_t  ngx_core_log_properties[] = {
+    #define NGX_X(id, key, name)  ngx_log_prop_decl(key, name, "core"),
+    NGX_CORE_LOG_PROP_LIST
+    #undef NGX_X
+};
+
 
 
 static u_char *
@@ -710,6 +737,8 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
     char               *rv;
     ngx_log_t          *new_log;
     ngx_str_t          *value, name;
+    ngx_log_ref_t      *lref;
+    ngx_log_conf_t     *lcf;
     ngx_syslog_peer_t  *peer;
 
     if (*head != NULL && (*head)->log_level == 0) {
@@ -827,6 +856,20 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
         ngx_log_insert(*head, new_log);
     }
 
+    lcf = (ngx_log_conf_t *) ngx_get_conf(cf->cycle->conf_ctx,
+                                          ngx_errlog_module);
+
+    lref = ngx_array_push(&lcf->logs);
+    if (lref == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    new_log->conf = lcf;
+
+    lref->log = new_log;
+    lref->name = cf->conf_file->file.name;
+    lref->line = cf->conf_file->line;
+
     return NGX_CONF_OK;
 }
 
@@ -917,20 +960,31 @@ ngx_log_action(ngx_log_t *log, u_char *buf, u_char *last, const char *action)
 }
 
 
+static ngx_log_property_t ngx_log_default_property =
+    ngx_log_prop_decl("unknown", "unknown", "unknown");
+
 u_char *
-ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
-    const char *fmt, ...)
+ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last,
+    ngx_log_property_key_t pkey, const char *fmt, ...)
 {
     u_char                 *p;
     va_list                 args;
     ngx_str_t               raw_field;
-    ngx_uint_t              i, len;
+    ngx_uint_t              i;
+    ngx_log_property_t     *prop, **props;
     ngx_log_filter_rule_t  *rules, *rule;
+
+    if (log->conf) {
+        props = log->conf->props.elts;
+        prop = props[pkey.id];
+
+    } else {
+        /* very early or late logging */
+        prop = &ngx_log_default_property;
+    }
 
     if (log->filter) {
         u_char  tmp[NGX_MAX_ERROR_STR];
-
-        len = ngx_strlen(key);
 
         rules = log->filter->rules.elts;
 
@@ -942,9 +996,7 @@ ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
                 continue;
             }
 
-            if (len != rule->field.len
-                || ngx_strncmp(key, rule->field.data, rule->field.len) != 0)
-            {
+            if (prop->index != rule->prop_idx) {
                 continue;
             }
 
@@ -965,7 +1017,7 @@ ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
         }
     }
 
-    p = ngx_slprintf(buf, last, ", %s: \"", key);
+    p = ngx_slprintf(buf, last, ", %V: \"", &prop->name);
 
     va_start(args, fmt);
     p = ngx_vslprintf(p, last, fmt, args);
@@ -982,8 +1034,8 @@ ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
 
 
 u_char *
-ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
-    ngx_log_ext_handler_pt handler, void *data)
+ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last,
+    ngx_log_property_key_t key, ngx_log_ext_handler_pt handler, void *data)
 {
     return handler(log, buf, last, data);
 }
@@ -1285,5 +1337,181 @@ ngx_log_add_str_tag(ngx_log_t *log, ngx_str_t *tag)
         if (ngx_log_filter_rule_match(&rules[i], tag) == NGX_OK) {
             rules[i].match = 1;
         }
+    }
+}
+
+
+static ngx_int_t
+ngx_log_conf_add_property(ngx_log_conf_t *lcf, ngx_log_t *log,
+    ngx_log_property_t *prop)
+{
+    ngx_uint_t            i;
+    ngx_log_property_t  **props;
+
+    props = lcf->props.elts;
+
+    for (i = 0; i < lcf->props.nelts; i++) {
+        if (props[i] == prop) {
+            ngx_log_error(NGX_LOG_EMERG, log, 0,
+                          "attempt to add duplicate log property: %V",
+                          &prop->key);
+            return NGX_ERROR;
+        }
+    }
+
+    props = ngx_array_push(&lcf->props);
+    if (props == NULL) {
+        return NGX_ERROR;
+    }
+
+    *props = prop;
+
+    prop->index = lcf->props.nelts - 1;
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_log_add_property(ngx_cycle_t *cycle, ngx_log_property_t *prop)
+{
+    ngx_log_conf_t  *lcf;
+
+    lcf = (ngx_log_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_errlog_module);
+
+    return ngx_log_conf_add_property(lcf, cycle->log, prop);
+}
+
+
+static void *
+ngx_log_create_conf(ngx_cycle_t *cycle)
+{
+    ngx_log_conf_t  *lcf;
+
+    lcf = ngx_pcalloc(cycle->pool, sizeof(ngx_log_conf_t));
+    if (lcf == NULL) {
+        return NULL;
+    }
+
+    if (ngx_array_init(&lcf->logs, cycle->pool, 4, sizeof(ngx_log_ref_t))
+        != NGX_OK)
+    {
+        return NULL;
+    }
+
+    if (ngx_array_init(&lcf->props, cycle->pool, 4,
+                       sizeof(ngx_log_property_t *))
+        != NGX_OK)
+    {
+        return NULL;
+    }
+
+#define NGX_X(id, key, name)                                                  \
+    if (ngx_log_conf_add_property(lcf, cycle->log,                            \
+                           &ngx_core_log_properties[NGX_CORE_LOG_PROP__##id]) \
+        != NGX_OK)                                                            \
+    {                                                                         \
+        return NULL;                                                          \
+    }
+    NGX_CORE_LOG_PROP_LIST
+#undef NGX_X
+
+    return lcf;
+}
+
+
+static char *
+ngx_log_init_conf(ngx_cycle_t *cycle, void *conf)
+{
+    ngx_log_conf_t *lcf = conf;
+
+    ngx_uint_t               i, j, k, found;
+    ngx_str_t               *item, *key;
+    ngx_log_ref_t           *lref;
+    ngx_log_property_t    **props;
+    ngx_log_filter_rule_t   *rules, *rule;
+
+    lref = lcf->logs.elts;
+
+    /* process all user-defined logs to check for invalid properties */
+    for (i = 0; i < lcf->logs.nelts; i++) {
+
+        if (lref[i].log->filter == NULL) {
+            continue;
+        }
+
+        rules = lref[i].log->filter->rules.elts;
+
+        /* each log might have multiple filters */
+        for (j = 0; j < lref[i].log->filter->rules.nelts; j++) {
+            rule = &rules[j];
+
+            /* we only check those that reference properties */
+            if (rule->part != NGX_LOG_FILTER_FIELD) {
+                continue;
+            }
+
+            item = &rule->field;
+
+            found = 0;
+            props = lcf->props.elts;
+            for (k = 0; k < lcf->props.nelts; k++) {
+
+                key = &props[k]->key;
+
+                if (key->len != item->len) {
+                    continue;
+                }
+
+                if (ngx_strncmp(key->data, item->data, item->len) == 0) {
+                    found = 1;
+                    rule->prop_idx = props[k]->index;
+                    break;
+                }
+            }
+
+            if (!found) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "error_log directive at %V:%ui has filter "
+                              "with unknown property \"%V\"", &lref[i].name,
+                              lref[i].line, &rule->field);
+
+                return NGX_CONF_ERROR;
+            }
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+void
+ngx_show_log_filters_info(ngx_cycle_t *cycle)
+{
+    ngx_uint_t            i;
+    ngx_log_conf_t       *lcf;
+    ngx_log_property_t  **props;
+
+    lcf = (ngx_log_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_errlog_module);
+    if (lcf == NULL) {
+        return;
+    }
+
+    ngx_write_stderr("Supported log filters:\n");
+    ngx_write_stderr("  logline\n");
+    ngx_write_stderr("  message\n");
+    ngx_write_stderr("  tag\n");
+#if (NGX_DEBUG)
+    ngx_write_stderr("  sourcefile (debug build)\n");
+#endif
+
+    props = lcf->props.elts;
+
+    for (i = 0; i < lcf->props.nelts; i++) {
+        ngx_write_stderr("  ");
+        ngx_write_fd(ngx_stderr, props[i]->key.data, props[i]->key.len);
+        ngx_write_fd(ngx_stderr, " (", 2);
+        ngx_write_stderr((char *) props[i]->module);
+        ngx_write_fd(ngx_stderr, " module)\n", 9);
     }
 }

@@ -232,7 +232,8 @@ ngx_acceptex_log_error(ngx_log_t *log, u_char *buf, size_t len)
 
     p = ngx_log_action(log, p, last, "posting AcceptEx()");
 
-    p = ngx_log_property(log, p, last, "listen address", "%V", log->data);
+    p = ngx_log_property(log, p, last, ngx_core_log_prop(LISTEN_ADDR),
+                         "%V", log->data);
 
     return p;
 }

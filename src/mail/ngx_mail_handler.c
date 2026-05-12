@@ -1296,28 +1296,32 @@ ngx_mail_log_error(ngx_log_t *log, u_char *buf, size_t len)
         p = ngx_log_action(log, p, last, log->action);
     }
 
-    p = ngx_log_property(log, p, last, "client", "%V", ctx->client);
+    p = ngx_log_property(log, p, last, ngx_mail_log_prop(CLIENT), "%V",
+                         ctx->client);
 
 
     if (s == NULL) {
         return p;
     }
 
-    p = ngx_log_property(log, p, last, "server", "%V", s->addr_text);
+    p = ngx_log_property(log, p, last, ngx_mail_log_prop(SERVER), "%V",
+                         s->addr_text);
 
     if (s->starttls) {
-        p = ngx_log_property(log, p, last, "starttls", "true");
+        p = ngx_log_property(log, p, last, ngx_mail_log_prop(STARTTLS),
+                             "true");
     }
 
     if (s->login.len) {
-        p = ngx_log_property(log, p, last, "login", "%V", &s->login);
+        p = ngx_log_property(log, p, last, ngx_mail_log_prop(LOGIN), "%V",
+                             &s->login);
     }
 
     if (s->proxy == NULL) {
         return p;
     }
 
-    p = ngx_log_property(log, p, last, "upstream", "%V",
+    p = ngx_log_property(log, p, last, ngx_mail_log_prop(UPSTREAM), "%V",
                          s->proxy->upstream.name);
 
     return p;

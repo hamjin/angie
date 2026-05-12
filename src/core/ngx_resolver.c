@@ -5128,7 +5128,8 @@ ngx_resolver_log_error(ngx_log_t *log, u_char *buf, size_t len)
     rec = log->data;
 
     if (rec) {
-        p = ngx_log_property(log, p, last, "resolver", "%V", &rec->server);
+        p = ngx_log_property(log, p, last, ngx_core_log_prop(RESOLVER),
+                             "%V", &rec->server);
     }
 
     return p;

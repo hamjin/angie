@@ -18,6 +18,24 @@
 #include <ngx_mail_ssl_module.h>
 #endif
 
+#define NGX_MAIL_LOG_PROP_LIST                                                \
+    NGX_X(CLIENT,   "client",   "client")                                     \
+    NGX_X(SERVER,   "server",   "server")                                     \
+    NGX_X(STARTTLS, "starttls", "starttls")                                   \
+    NGX_X(LOGIN,    "login",    "login")                                      \
+    NGX_X(UPSTREAM, "upstream", "upstream")
+
+enum {
+    #define NGX_X(id, key, name)  NGX_MAIL_LOG_PROP__##id,
+    NGX_MAIL_LOG_PROP_LIST
+    #undef NGX_X
+};
+
+extern ngx_log_property_t  ngx_mail_log_properties[];
+
+#define ngx_mail_log_prop(id)                                                 \
+    ((ngx_log_property_key_t)                                                 \
+     { ngx_mail_log_properties[NGX_MAIL_LOG_PROP__##id].index })
 
 
 typedef struct {

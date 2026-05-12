@@ -196,6 +196,13 @@ ngx_module_t  ngx_stream_core_module = {
 };
 
 
+ngx_log_property_t  ngx_stream_log_properties[] = {
+    #define NGX_X(id, key, name)  ngx_log_prop_decl(key, name, "stream"),
+    NGX_STREAM_LOG_PROP_LIST
+    #undef NGX_X
+};
+
+
 #if (NGX_API)
 
 static ngx_api_entry_t  ngx_api_stream_entries[] = {
@@ -774,6 +781,16 @@ ngx_stream_find_virtual_server(ngx_stream_session_t *s,
 static ngx_int_t
 ngx_stream_core_preconfiguration(ngx_conf_t *cf)
 {
+#define NGX_X(id, key, name)                                                  \
+    if (ngx_log_add_property(cf->cycle,                                       \
+                      &ngx_stream_log_properties[NGX_STREAM_LOG_PROP__##id])  \
+        != NGX_OK)                                                            \
+    {                                                                         \
+        return NGX_ERROR;                                                     \
+    }
+    NGX_STREAM_LOG_PROP_LIST
+#undef NGX_X
+
     return ngx_stream_variables_add_core_vars(cf);
 }
 

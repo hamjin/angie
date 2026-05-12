@@ -4323,16 +4323,17 @@ ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len)
 
     ctx = log->data;
 
-    p = ngx_log_property(log, p, last, "client", "%V",
+    p = ngx_log_property(log, p, last, ngx_http_log_prop(CLIENT), "%V",
                          &ctx->connection->addr_text);
 
     r = ctx->request;
 
     if (r) {
-        p = ngx_log_object(log, p, last, "http_request", r->log_handler, ctx);
+        p = ngx_log_object(log, p, last, ngx_http_log_prop(REQUEST),
+                           r->log_handler, ctx);
 
     } else {
-        p = ngx_log_property(log, p, last, "server", "%V",
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(SERVER), "%V",
                              &ctx->connection->listening->addr_text);
     }
 
@@ -4376,7 +4377,8 @@ ngx_http_log_error_handler(ngx_log_t *log, u_char *buf, u_char *last,
         }
     }
 
-    p = ngx_log_property(log, buf, last, "server", "%V", &cscf->server_name);
+    p = ngx_log_property(log, buf, last, ngx_http_log_prop(SERVER), "%V",
+                         &cscf->server_name);
 
     if (r->request_line.data == NULL && r->request_start) {
         for (ch = r->request_start; ch < r->header_in->last; ch++) {
@@ -4390,12 +4392,14 @@ ngx_http_log_error_handler(ngx_log_t *log, u_char *buf, u_char *last,
     }
 
     if (r->request_line.len) {
-        p = ngx_log_property(log, p, last, "request", "%V", &r->request_line);
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(REQUEST), "%V",
+                             &r->request_line);
     }
 
     if (r != sr) {
         ngx_log_add_tag(log, "subrequest");
-        p = ngx_log_property(log, p, last, "subrequest", "%V", &sr->uri);
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(SUBREQUEST), "%V",
+                             &sr->uri);
     }
 
     u = sr->upstream;
@@ -4416,18 +4420,18 @@ ngx_http_log_error_handler(ngx_log_t *log, u_char *buf, u_char *last,
         }
 #endif
 
-        p = ngx_log_property(log, p, last, "upstream", "%V%V%s%V",
-                             &u->schema, u->peer.name,
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(UPSTREAM),
+                             "%V%V%s%V", &u->schema, u->peer.name,
                              uri_separator, &u->uri);
     }
 
     if (r->headers_in.host) {
-        p = ngx_log_property(log, p, last, "host", "%V",
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(HOST), "%V",
                              &r->headers_in.host->value);
     }
 
     if (r->headers_in.referer) {
-        p = ngx_log_property(log, p, last, "referrer", "%V",
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(REFER), "%V",
                              &r->headers_in.referer->value);
     }
 

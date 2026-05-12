@@ -732,8 +732,8 @@ ngx_http_acme_log_error(ngx_log_t *log, u_char *buf, size_t len)
     ngx_log_add_tag(log, "acme");
 
     if (amcf->current != NULL) {
-        p = ngx_log_property(log, p, last, "ACME client", "%V",
-                             &amcf->current->name);
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(ACME_CLIENT),
+                             "%V", &amcf->current->name);
     }
 
     return p;
@@ -757,8 +757,8 @@ ngx_http_acme_client_log_handler(ngx_log_t *log, u_char *buf, u_char *last,
     ses = ngx_http_get_module_ctx(r, ngx_http_acme_module);
 
     if (ses && ses->client) {
-        p = ngx_log_property(log, p, last, "ACME client", "%V",
-                             &ses->client->name);
+        p = ngx_log_property(log, p, last, ngx_http_log_prop(ACME_CLIENT),
+                             "%V", &ses->client->name);
     }
 
     return p;

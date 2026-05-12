@@ -2456,22 +2456,24 @@ ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf, u_char *last,
 
     if (u->peer.name) {
         ngx_log_add_tag(log, "peer");
-        p = ngx_log_property(log, p, last, "upstream", "%V", u->peer.name);
+        p = ngx_log_property(log, p, last, ngx_stream_log_prop(UPSTREAM),
+                             "%V", u->peer.name);
     }
 
     pc = u->peer.connection;
 
-    p = ngx_log_property(log, p, last, "bytes from client", "%O",
-                         s->received);
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(BYTES_FROM_CLIENT),
+                         "%O", s->received);
 
-    p = ngx_log_property(log, p, last, "bytes to client", "%O",
-                         s->connection->sent);
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(BYTES_TO_CLIENT),
+                         "%O", s->connection->sent);
 
-    p = ngx_log_property(log, p, last, "bytes from upstream", "%O",
+    p = ngx_log_property(log, p, last,
+                         ngx_stream_log_prop(BYTES_FROM_UPSTREAM), "%O",
                          u->received);
 
-    p = ngx_log_property(log, p, last, "bytes to upstream", "%O",
-                         pc ? pc->sent : 0);
+    p = ngx_log_property(log, p, last, ngx_stream_log_prop(BYTES_TO_UPSTREAM),
+                         "%O", pc ? pc->sent : 0);
 
     return p;
 }

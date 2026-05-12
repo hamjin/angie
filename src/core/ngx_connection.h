@@ -214,6 +214,7 @@ struct ngx_connection_s {
     c->log->writer = l->writer;                                              \
     c->log->wdata = l->wdata;                                                \
     c->log->filter = l->filter;                                              \
+    c->log->conf = l->conf;                                                  \
     if (!(c->log->log_level & NGX_LOG_DEBUG_CONNECTION)) {                   \
         c->log->log_level = l->log_level;                                    \
     }

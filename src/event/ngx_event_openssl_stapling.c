@@ -2728,16 +2728,19 @@ ngx_ssl_ocsp_log_error(ngx_log_t *log, u_char *buf, size_t len)
     ctx = log->data;
 
     if (ctx) {
-        p = ngx_log_property(log, p, last, "responder", "%V", &ctx->host);
+        p = ngx_log_property(log, p, last, ngx_core_log_prop(OCSP_RESPONDER),
+                             "%V", &ctx->host);
     }
 
     if (ctx && ctx->peer.name) {
         ngx_log_add_tag(log, "peer");
-        p = ngx_log_property(log, p, last, "peer", "%V", ctx->peer.name);
+        p = ngx_log_property(log, p, last, ngx_core_log_prop(OCSP_PEER),
+                             "%V", ctx->peer.name);
     }
 
     if (ctx && ctx->name) {
-        p = ngx_log_property(log, p, last, "certificate", "%s", ctx->name);
+        p = ngx_log_property(log, p, last, ngx_core_log_prop(OCSP_CERT),
+                             "%s", ctx->name);
     }
 
     return p;
