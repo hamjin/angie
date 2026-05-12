@@ -27,6 +27,7 @@ typedef enum {
     NGX_LOG_FILTER_FILENAME,
 #endif
     NGX_LOG_FILTER_TAG,
+    NGX_LOG_FILTER_FIELD
 } ngx_log_filter_part_t;
 
 
@@ -44,6 +45,7 @@ typedef struct {
 
 typedef struct {
     ngx_str_t                     pattern;
+    ngx_str_t                     field;
     ngx_log_filter_part_t         part;
     ngx_log_filter_match_type_t   type;
 #if (NGX_PCRE)
@@ -919,8 +921,49 @@ u_char *
 ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
     const char *fmt, ...)
 {
-    u_char   *p;
-    va_list   args;
+    u_char                 *p;
+    va_list                 args;
+    ngx_str_t               raw_field;
+    ngx_uint_t              i, len;
+    ngx_log_filter_rule_t  *rules, *rule;
+
+    if (log->filter) {
+        u_char  tmp[NGX_MAX_ERROR_STR];
+
+        len = ngx_strlen(key);
+
+        rules = log->filter->rules.elts;
+
+        for (i = 0; i < log->filter->rules.nelts; i++) {
+
+            rule = &rules[i];
+
+            if (rule->part != NGX_LOG_FILTER_FIELD) {
+                continue;
+            }
+
+            if (len != rule->field.len
+                || ngx_strncmp(key, rule->field.data, rule->field.len) != 0)
+            {
+                continue;
+            }
+
+            /* dump found field into temp buffer */
+            va_start(args, fmt);
+            p = ngx_vslprintf(tmp, tmp + NGX_MAX_ERROR_STR, fmt, args);
+            va_end(args);
+
+            raw_field.data = tmp;
+            raw_field.len = p - tmp;
+
+            if (ngx_log_filter_rule_match(rule, &raw_field) == NGX_OK) {
+                rule->match = 1;
+            }
+
+            /* multiple rules on same field are not allowed */
+            break;
+        }
+    }
 
     p = ngx_slprintf(buf, last, ", %s: \"", key);
 
@@ -1009,9 +1052,15 @@ ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log, ngx_str_t *value)
         rule->pattern.data = value->data + 4;
 
     } else {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "unknown filter type \"%V\"", value);
-        return NGX_CONF_ERROR;
+
+        rule->field.len = p - value->data;
+        rule->field.data = value->data;
+
+        p++;
+
+        rule->part = NGX_LOG_FILTER_FIELD;
+        rule->pattern.data = p;
+        rule->pattern.len = value->len - rule->field.len - 1;
     }
 
     return ngx_log_filter_set_rule(cf, rule, value);
@@ -1161,7 +1210,12 @@ ngx_log_filter_apply_rules(ngx_log_t *log, ngx_log_params_t *lp)
 
             continue;
 
-        default:
+        case NGX_LOG_FILTER_FIELD:
+
+            if (!rules[i].match) {
+                return NGX_DECLINED;
+            }
+
             continue;
         }
     }
