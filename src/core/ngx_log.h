@@ -209,6 +209,7 @@ ngx_basename(const char *filename)
     return base ? (base + 1) : filename;
 }
 
+void ngx_log_add_tag(ngx_log_t *log, const char *s);
 
 extern ngx_module_t  ngx_errlog_module;
 extern ngx_uint_t    ngx_use_stderr;

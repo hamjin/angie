@@ -26,6 +26,7 @@ typedef enum {
 #if (NGX_DEBUG)
     NGX_LOG_FILTER_FILENAME,
 #endif
+    NGX_LOG_FILTER_TAG,
 } ngx_log_filter_part_t;
 
 
@@ -48,6 +49,7 @@ typedef struct {
 #if (NGX_PCRE)
     ngx_regex_t                  *re;
 #endif
+    ngx_uint_t                    match; /* per-call state */
 } ngx_log_filter_rule_t;
 
 
@@ -66,6 +68,7 @@ static char *ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log,
     ngx_str_t *value);
 static char *ngx_log_filter_set_rule(ngx_conf_t *cf,
     ngx_log_filter_rule_t *rule, ngx_str_t *value);
+static ngx_inline void ngx_log_filter_init(ngx_log_filter_t *filter);
 static ngx_int_t ngx_log_filter_apply_rules(ngx_log_t *log,
     ngx_log_params_t *lp);
 
@@ -284,6 +287,10 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, const char *filename,
         log->data = head->data;
         log->connection = head->connection;
         log->action = head->action;
+
+        if (log->filter) {
+            ngx_log_filter_init(log->filter);
+        }
 
         va_start(args, fmt);
         p = ngx_log_create_message(log, &lp, fmt, args);
@@ -995,6 +1002,12 @@ ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log, ngx_str_t *value)
         return "source file filtering requires debug build";
 #endif
 
+    } else if (ngx_strncmp(value->data, "tag:", 4) == 0) {
+
+        rule->part = NGX_LOG_FILTER_TAG;
+        rule->pattern.len = value->len - 4;
+        rule->pattern.data = value->data + 4;
+
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "unknown filter type \"%V\"", value);
@@ -1079,6 +1092,20 @@ ngx_log_filter_set_rule(ngx_conf_t *cf, ngx_log_filter_rule_t *rule,
 }
 
 
+static ngx_inline void
+ngx_log_filter_init(ngx_log_filter_t *filter)
+{
+    ngx_uint_t              i;
+    ngx_log_filter_rule_t  *rules;
+
+    rules = filter->rules.elts;
+
+    for (i = 0; i < filter->rules.nelts; i++) {
+        rules[i].match = 0;
+    }
+}
+
+
 static ngx_int_t
 ngx_log_filter_apply_rules(ngx_log_t *log, ngx_log_params_t *lp)
 {
@@ -1121,6 +1148,14 @@ ngx_log_filter_apply_rules(ngx_log_t *log, ngx_log_params_t *lp)
             item = lp->msg;
 
             if (ngx_log_filter_rule_match(&rules[i], &item) != NGX_OK) {
+                return NGX_DECLINED;
+            }
+
+            continue;
+
+        case NGX_LOG_FILTER_TAG:
+
+            if (!rules[i].match) {
                 return NGX_DECLINED;
             }
 
@@ -1174,3 +1209,31 @@ ngx_log_filter_rule_match(ngx_log_filter_rule_t *rule, ngx_str_t *str)
     }
 }
 
+
+void
+ngx_log_add_tag(ngx_log_t *log, const char *s)
+{
+    ngx_str_t               tag;
+    ngx_uint_t              i;
+    ngx_log_filter_rule_t  *rules;
+
+    if (log->filter == NULL) {
+        return;
+    }
+
+    tag.len = ngx_strlen(s);
+    tag.data = (u_char *) s;
+
+    rules = log->filter->rules.elts;
+
+    for (i = 0; i < log->filter->rules.nelts; i++) {
+
+        if (rules[i].part != NGX_LOG_FILTER_TAG) {
+            continue;
+        }
+
+        if (ngx_log_filter_rule_match(&rules[i], &tag) == NGX_OK) {
+            rules[i].match = 1;
+        }
+    }
+}

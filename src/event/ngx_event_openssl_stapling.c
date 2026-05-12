@@ -2719,6 +2719,8 @@ ngx_ssl_ocsp_log_error(ngx_log_t *log, u_char *buf, size_t len)
     p = buf;
     last = buf + len;
 
+    ngx_log_add_tag(log, "ocsp");
+
     if (log->action) {
         p = ngx_log_action(log, p, last, log->action);
     }
@@ -2730,6 +2732,7 @@ ngx_ssl_ocsp_log_error(ngx_log_t *log, u_char *buf, size_t len)
     }
 
     if (ctx && ctx->peer.name) {
+        ngx_log_add_tag(log, "peer");
         p = ngx_log_property(log, p, last, "peer", "%V", ctx->peer.name);
     }
 

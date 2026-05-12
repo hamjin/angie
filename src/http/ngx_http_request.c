@@ -4315,6 +4315,8 @@ ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len)
     p = buf;
     last = buf + len;
 
+    ngx_log_add_tag(log, "http");
+
     if (log->action) {
         p = ngx_log_action(log, p, last, log->action);
     }
@@ -4373,12 +4375,19 @@ ngx_http_log_error_handler(ngx_log_t *log, u_char *buf, u_char *last,
     }
 
     if (r != sr) {
+        ngx_log_add_tag(log, "subrequest");
         p = ngx_log_property(log, p, last, "subrequest", "%V", &sr->uri);
     }
 
     u = sr->upstream;
 
+    if (u) {
+        ngx_log_add_tag(log, "upstream");
+    }
+
     if (u && u->peer.name) {
+
+        ngx_log_add_tag(log, "peer");
 
         uri_separator = "";
 
