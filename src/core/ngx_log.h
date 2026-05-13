@@ -43,6 +43,8 @@
 #define NGX_LOG_DEBUG_ALL         0x7ffffff0
 
 
+typedef struct ngx_log_filter_s  ngx_log_filter_t;
+
 typedef u_char *(*ngx_log_handler_pt) (ngx_log_t *log, u_char *buf, size_t len);
 typedef u_char *(*ngx_log_ext_handler_pt) (ngx_log_t *log, u_char *buf,
     u_char *last, void *data);
@@ -73,6 +75,11 @@ struct ngx_log_s {
     char                *action;
 
     ngx_log_t           *next;
+
+    ngx_log_filter_t    *filter;
+
+    /* only meaningful during the call on the first log in list */
+    ngx_uint_t           busy; /* unsigned busy:1; */
 
     NGX_COMPAT_BEGIN(5)
     NGX_COMPAT_END

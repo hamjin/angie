@@ -8,15 +8,48 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+#if (NGX_PCRE)
+#include <ngx_regex.h>
+#endif
+
+
+typedef enum {
+    NGX_LOG_FILTER_MATCH_EXACT,
+    NGX_LOG_FILTER_MATCH_SUBSTRING,
+    NGX_LOG_FILTER_MATCH_REGEX
+} ngx_log_filter_match_type_t;
+
+
+typedef enum {
+    NGX_LOG_FILTER_LOGLINE,
+    NGX_LOG_FILTER_MESSAGE,
+} ngx_log_filter_part_t;
 
 
 typedef struct {
-    u_char        *buf;
-    u_char        *last;
-    ngx_uint_t     level;
-    ngx_err_t      err;
-    ngx_uint_t     console;
+    u_char                       *buf;
+    u_char                       *last;
+    ngx_uint_t                    level;
+    ngx_err_t                     err;
+    ngx_uint_t                    console;
+    ngx_str_t                     line;
+    ngx_str_t                     msg;
 } ngx_log_params_t;
+
+
+typedef struct {
+    ngx_str_t                     pattern;
+    ngx_log_filter_part_t         part;
+    ngx_log_filter_match_type_t   type;
+#if (NGX_PCRE)
+    ngx_regex_t                  *re;
+#endif
+} ngx_log_filter_rule_t;
+
+
+struct ngx_log_filter_s {
+    ngx_array_t                   rules;  /* of ngx_log_filter_rule_t */
+};
 
 
 static u_char *ngx_log_create_message(ngx_log_t *log, ngx_log_params_t *lp,
@@ -25,6 +58,16 @@ static char *ngx_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log);
 static void ngx_log_insert(ngx_log_t *log, ngx_log_t *new_log);
 
+static char *ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log,
+    ngx_str_t *value);
+static char *ngx_log_filter_set_rule(ngx_conf_t *cf,
+    ngx_log_filter_rule_t *rule, ngx_str_t *value);
+static ngx_int_t ngx_log_filter_apply_rules(ngx_log_t *log,
+    ngx_log_params_t *lp);
+
+static ngx_int_t ngx_log_filter_rule_match(ngx_log_filter_rule_t *rule,
+    ngx_str_t *str);
+static u_char *ngx_log_match_substring(ngx_str_t *haystack, ngx_str_t *needle);
 
 #if (NGX_DEBUG)
 
@@ -134,7 +177,12 @@ ngx_log_create_message(ngx_log_t *log, ngx_log_params_t *lp,
 
 msg:
 
+    lp->line.data = p;
+    lp->msg.data = p;
+
     p = ngx_vslprintf(p, last, fmt, args);
+
+    lp->msg.len = p - lp->msg.data;
 
     if (lp->err) {
         p = ngx_log_errno(p, last, lp->err);
@@ -144,6 +192,8 @@ msg:
         p = log->handler(log, p, last - p);
     }
 
+    lp->line.len = p - lp->line.data;
+
     if (p > last - NGX_LINEFEED_SIZE) {
         p = last - NGX_LINEFEED_SIZE;
     }
@@ -151,6 +201,40 @@ msg:
     ngx_linefeed(p);
 
     return p;
+}
+
+
+static u_char *
+ngx_log_match_substring(ngx_str_t *haystack, ngx_str_t *needle)
+{
+    u_char  c1, c2, *s1, *s2;
+    size_t  n, len;
+
+    s1 = haystack->data;
+    len = haystack->len;
+
+    c2 = needle->data[0];
+
+    s2 = needle->data + 1;
+    n = needle->len - 1;
+
+    do {
+        do {
+            if (len-- == 0) {
+                return NULL;
+            }
+
+            c1 = *s1++;
+
+        } while (c1 != c2);
+
+        if (n > len) {
+            return NULL;
+        }
+
+    } while (ngx_strncmp(s1, (u_char *) s2, n) != 0);
+
+    return --s1;
 }
 
 
@@ -166,15 +250,19 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     u_char             errstr[NGX_MAX_ERROR_STR];
     ngx_log_params_t   lp;
 
+    if (log->busy) {
+        return;
+    }
+
+    log->busy = 1;
+
     lp.level = level;
     lp.buf = errstr;
     lp.last = errstr + NGX_MAX_ERROR_STR;
     lp.err = err;
     lp.console = 0;
-
-    va_start(args, fmt);
-    p = ngx_log_create_message(log, &lp, fmt, args);
-    va_end(args);
+    lp.line.len = 0;
+    lp.msg.len = 0;
 
     wrote_stderr = 0;
     debug_connection = (log->log_level & NGX_LOG_DEBUG_CONNECTION) != 0;
@@ -185,6 +273,21 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
         if (log->log_level < level && !debug_connection) {
             break;
+        }
+
+        log->handler = head->handler;
+        log->data = head->data;
+        log->connection = head->connection;
+        log->action = head->action;
+
+        va_start(args, fmt);
+        p = ngx_log_create_message(log, &lp, fmt, args);
+        va_end(args);
+
+        if (log->filter
+            && ngx_log_filter_apply_rules(log, &lp) == NGX_DECLINED)
+        {
+            goto next;
         }
 
         if (log->writer) {
@@ -222,6 +325,7 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
         || level > NGX_LOG_WARN
         || wrote_stderr)
     {
+        head->busy = 0;
         return;
     }
 
@@ -232,6 +336,8 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     va_end(args);
 
     (void) ngx_write_console(ngx_stderr, errstr, p - errstr);
+
+    head->busy = 0;
 }
 
 
@@ -489,7 +595,8 @@ ngx_log_get_level(u_char *level)
 static char *
 ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
 {
-    ngx_uint_t   i, n, d, found;
+    char        *rv;
+    ngx_uint_t   i, n, d, found, level_set;
     ngx_str_t   *value;
 
     if (cf->args->nelts == 2) {
@@ -499,7 +606,24 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
 
     value = cf->args->elts;
 
+    level_set = 0;
+
     for (i = 2; i < cf->args->nelts; i++) {
+
+        if (ngx_strncmp(value[i].data, "filter=", 7) == 0) {
+
+            value[i].data += 7;
+            value[i].len -= 7;
+
+            rv = ngx_log_add_filter(cf, log, &value[i]);
+
+            if (rv != NGX_CONF_OK) {
+                return rv;
+            }
+
+            continue;
+        }
+
         found = 0;
 
         for (n = 1; n <= NGX_LOG_DEBUG; n++) {
@@ -514,6 +638,7 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
 
                 log->log_level = n;
                 found = 1;
+                level_set = 1;
                 break;
             }
         }
@@ -528,6 +653,7 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
                 }
 
                 log->log_level |= d;
+                level_set = 1;
                 found = 1;
                 break;
             }
@@ -543,6 +669,10 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
 
     if (log->log_level == NGX_LOG_DEBUG) {
         log->log_level = NGX_LOG_DEBUG_ALL;
+    }
+
+    if (!level_set) {
+        log->log_level = NGX_LOG_ERR;
     }
 
     return NGX_CONF_OK;
@@ -563,6 +693,7 @@ ngx_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 char *
 ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
 {
+    char               *rv;
     ngx_log_t          *new_log;
     ngx_str_t          *value, name;
     ngx_syslog_peer_t  *peer;
@@ -672,8 +803,10 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
         }
     }
 
-    if (ngx_log_set_levels(cf, new_log) != NGX_CONF_OK) {
-        return NGX_CONF_ERROR;
+    rv = ngx_log_set_levels(cf, new_log);
+
+    if (rv != NGX_CONF_OK) {
+        return rv;
     }
 
     if (*head != new_log) {
@@ -798,5 +931,215 @@ ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
     ngx_log_ext_handler_pt handler, void *data)
 {
     return handler(log, buf, last, data);
+}
+
+
+static char *
+ngx_log_add_filter(ngx_conf_t *cf, ngx_log_t *log, ngx_str_t *value)
+{
+    u_char                 *p;
+    ngx_log_filter_rule_t  *rule;
+
+    if (log->filter == NULL) {
+        log->filter = ngx_pcalloc(cf->pool, sizeof(ngx_log_filter_t));
+        if (log->filter == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        if (ngx_array_init(&log->filter->rules, cf->pool, 4,
+                           sizeof(ngx_log_filter_rule_t))
+            != NGX_OK)
+        {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    rule = ngx_array_push(&log->filter->rules);
+    if (rule == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    p = (u_char *) ngx_strchr(value->data, ':');
+
+    if (p == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "missing filter type in \"%V\"", value);
+
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strncmp(value->data, "logline:", 8) == 0) {
+
+        rule->part = NGX_LOG_FILTER_LOGLINE;
+        rule->pattern.len = value->len - 8;
+        rule->pattern.data = value->data + 8;
+
+    } else if (ngx_strncmp(value->data, "message:", 8) == 0) {
+
+        rule->part = NGX_LOG_FILTER_MESSAGE;
+        rule->pattern.len = value->len - 8;
+        rule->pattern.data = value->data + 8;
+
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "unknown filter type \"%V\"", value);
+        return NGX_CONF_ERROR;
+    }
+
+    return ngx_log_filter_set_rule(cf, rule, value);
+}
+
+
+static char *
+ngx_log_filter_set_rule(ngx_conf_t *cf, ngx_log_filter_rule_t *rule,
+    ngx_str_t *value)
+{
+    ngx_str_t            *pattern;
+#if (NGX_PCRE)
+    ngx_regex_compile_t   rc;
+    u_char                errstr[NGX_MAX_CONF_ERRSTR];
+#endif
+
+    pattern = &rule->pattern;
+
+    if (pattern->len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "empty filter pattern \"%V\"", value);
+        return NGX_CONF_ERROR;
+    }
+
+    if (pattern->data[0] == '=') {
+        rule->type = NGX_LOG_FILTER_MATCH_EXACT;
+
+        pattern->len -= 1;
+        pattern->data += 1;
+
+        if (pattern->len == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "empty filter pattern \"%V\"", value);
+            return NGX_CONF_ERROR;
+        }
+
+    } else if (pattern->data[0] == '~') {
+
+        pattern->len -= 1;
+        pattern->data += 1;
+
+        if (pattern->len == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "empty filter pattern \"%V\"", value);
+            return NGX_CONF_ERROR;
+        }
+
+#if (NGX_PCRE)
+
+        rule->type = NGX_LOG_FILTER_MATCH_REGEX;
+
+        ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
+
+        rc.pattern = *pattern;
+        rc.pool = cf->pool;
+        rc.err.len = NGX_MAX_CONF_ERRSTR;
+        rc.err.data = errstr;
+
+        if (ngx_regex_compile(&rc) != NGX_OK) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%V", &rc.err);
+            return NGX_CONF_ERROR;
+        }
+
+        rule->re = rc.regex;
+
+#else
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "\"%V\" requires PCRE library", value);
+
+        return NGX_CONF_ERROR;
+#endif
+
+    } else {
+        rule->type = NGX_LOG_FILTER_MATCH_SUBSTRING;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_log_filter_apply_rules(ngx_log_t *log, ngx_log_params_t *lp)
+{
+    ngx_str_t               item;
+    ngx_uint_t              i;
+    ngx_log_filter_rule_t  *rules;
+
+    rules = log->filter->rules.elts;
+
+    for (i = 0; i < log->filter->rules.nelts; i++) {
+
+        switch (rules[i].part) {
+
+        case NGX_LOG_FILTER_LOGLINE:
+            item = lp->line;
+
+            if (ngx_log_filter_rule_match(&rules[i], &item) != NGX_OK) {
+                return NGX_DECLINED;
+            }
+
+            continue;
+
+        case NGX_LOG_FILTER_MESSAGE:
+            item = lp->msg;
+
+            if (ngx_log_filter_rule_match(&rules[i], &item) != NGX_OK) {
+                return NGX_DECLINED;
+            }
+
+            continue;
+
+        default:
+            continue;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_log_filter_rule_match(ngx_log_filter_rule_t *rule, ngx_str_t *str)
+{
+    switch (rule->type) {
+    case NGX_LOG_FILTER_MATCH_SUBSTRING:
+
+        if (ngx_log_match_substring(str, &rule->pattern)) {
+            return NGX_OK;
+        }
+
+        return NGX_DECLINED;
+
+    case NGX_LOG_FILTER_MATCH_EXACT:
+
+        if (rule->pattern.len != str->len) {
+            return NGX_DECLINED;
+        }
+
+        if (ngx_strncmp(rule->pattern.data, str->data, str->len) == 0) {
+            return NGX_OK;
+        }
+
+        return NGX_DECLINED;
+
+#if (NGX_PCRE)
+    case NGX_LOG_FILTER_MATCH_REGEX:
+
+        if (ngx_regex_exec(rule->re, str, NULL, 0) >= 0) {
+            return NGX_OK;
+        }
+
+        return NGX_DECLINED;
+#endif
+
+    default:
+        return NGX_DECLINED;
+    }
 }
 
