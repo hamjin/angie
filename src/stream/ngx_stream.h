@@ -352,7 +352,7 @@ struct ngx_stream_session_s {
     time_t                         start_sec;
     ngx_msec_t                     start_msec;
 
-    ngx_log_handler_pt             log_handler;
+    ngx_log_ext_handler_pt         log_handler;
 
     void                         **ctx;
     void                         **main_conf;

@@ -2713,35 +2713,28 @@ ngx_ssl_ocsp_create_key(ngx_ssl_ocsp_ctx_t *ctx)
 static u_char *
 ngx_ssl_ocsp_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
-    u_char              *p;
+    u_char              *p, *last;
     ngx_ssl_ocsp_ctx_t  *ctx;
 
     p = buf;
+    last = buf + len;
 
     if (log->action) {
-        p = ngx_snprintf(buf, len, " while %s", log->action);
-        len -= p - buf;
-        buf = p;
+        p = ngx_log_action(log, p, last, log->action);
     }
 
     ctx = log->data;
 
     if (ctx) {
-        p = ngx_snprintf(buf, len, ", responder: %V", &ctx->host);
-        len -= p - buf;
-        buf = p;
+        p = ngx_log_property(log, p, last, "responder", "%V", &ctx->host);
     }
 
     if (ctx && ctx->peer.name) {
-        p = ngx_snprintf(buf, len, ", peer: %V", ctx->peer.name);
-        len -= p - buf;
-        buf = p;
+        p = ngx_log_property(log, p, last, "peer", "%V", ctx->peer.name);
     }
 
     if (ctx && ctx->name) {
-        p = ngx_snprintf(buf, len, ", certificate: \"%s\"", ctx->name);
-        len -= p - buf;
-        buf = p;
+        p = ngx_log_property(log, p, last, "certificate", "%s", ctx->name);
     }
 
     return p;

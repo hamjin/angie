@@ -44,6 +44,8 @@
 
 
 typedef u_char *(*ngx_log_handler_pt) (ngx_log_t *log, u_char *buf, size_t len);
+typedef u_char *(*ngx_log_ext_handler_pt) (ngx_log_t *log, u_char *buf,
+    u_char *last, void *data);
 typedef void (*ngx_log_writer_pt) (ngx_log_t *log, ngx_uint_t level,
     u_char *buf, size_t len);
 
@@ -153,6 +155,13 @@ ngx_int_t ngx_log_redirect_stderr(ngx_cycle_t *cycle);
 ngx_log_t *ngx_log_get_file_log(ngx_log_t *head);
 ngx_int_t ngx_log_get_level(u_char *level);
 char *ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head);
+
+u_char *ngx_log_action(ngx_log_t *log, u_char *buf, u_char *last,
+    const char *action);
+u_char *ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last,
+    const char *key, const char *fmt, ...);
+u_char *ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last,
+    const char *key, ngx_log_ext_handler_pt handler, void *data);
 
 
 /*

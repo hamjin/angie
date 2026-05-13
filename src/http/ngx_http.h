@@ -30,6 +30,8 @@ typedef struct ngx_http_server_stats_s  ngx_http_server_stats_t;
 
 typedef ngx_int_t (*ngx_http_header_handler_pt)(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
+
+/* deprecated, use ngx_log_ext_handler_pt instead */
 typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
     ngx_http_request_t *sr, u_char *buf, size_t len);
 

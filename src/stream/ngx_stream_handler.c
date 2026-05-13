@@ -613,26 +613,29 @@ ngx_stream_close_connection(ngx_connection_t *c)
 static u_char *
 ngx_stream_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
-    u_char                *p;
+    u_char                *p, *last;
     ngx_stream_session_t  *s;
 
-    if (log->action) {
-        p = ngx_snprintf(buf, len, " while %s", log->action);
-        len -= p - buf;
-        buf = p;
-    }
+    p = buf;
+    last = buf + len;
 
     s = log->data;
 
-    p = ngx_snprintf(buf, len, ", %sclient: %V, server: %V",
-                     s->connection->type == SOCK_DGRAM ? "udp " : "",
-                     &s->connection->addr_text,
-                     &s->connection->listening->addr_text);
-    len -= p - buf;
-    buf = p;
+    if (log->action) {
+        p = ngx_log_action(log, p, last, log->action);
+    }
+
+    p = ngx_log_property(log, p, last, "client", "%V",
+                         &s->connection->addr_text);
+
+    p = ngx_log_property(log, p, last, "server", "%V",
+                         &s->connection->listening->addr_text);
+
+    p = ngx_log_property(log, p, last, "protocol", "%s",
+                         s->connection->type == SOCK_DGRAM ? "udp" : "tcp");
 
     if (s->log_handler) {
-        p = s->log_handler(log, buf, len);
+        p = ngx_log_object(log, p, last, "stream_session", s->log_handler, s);
     }
 
     return p;

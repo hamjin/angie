@@ -761,3 +761,42 @@ ngx_log_memory_cleanup(void *data)
 }
 
 #endif
+
+
+u_char *
+ngx_log_action(ngx_log_t *log, u_char *buf, u_char *last, const char *action)
+{
+    return ngx_slprintf(buf, last, " while %s", action);
+}
+
+
+u_char *
+ngx_log_property(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
+    const char *fmt, ...)
+{
+    u_char   *p;
+    va_list   args;
+
+    p = ngx_slprintf(buf, last, ", %s: \"", key);
+
+    va_start(args, fmt);
+    p = ngx_vslprintf(p, last, fmt, args);
+    va_end(args);
+
+    if (last - p < 1) {
+        return p;
+    }
+
+    *p++ = '"';
+
+    return p;
+}
+
+
+u_char *
+ngx_log_object(ngx_log_t *log, u_char *buf, u_char *last, const char *key,
+    ngx_log_ext_handler_pt handler, void *data)
+{
+    return handler(log, buf, last, data);
+}
+
