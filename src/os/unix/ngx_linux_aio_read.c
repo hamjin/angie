@@ -13,6 +13,12 @@
 extern int            ngx_eventfd;
 extern aio_context_t  ngx_aio_ctx;
 
+#if (NGX_HAVE_IO_URING)
+extern ngx_uint_t  ngx_io_uring_enabled;
+ssize_t ngx_linux_io_uring_read(ngx_file_t *file, u_char *buf, size_t size,
+    off_t offset, ngx_pool_t *pool);
+#endif
+
 
 static void ngx_file_aio_event_handler(ngx_event_t *ev);
 
@@ -58,6 +64,12 @@ ngx_file_aio_read(ngx_file_t *file, u_char *buf, size_t size, off_t offset,
     if (!ngx_file_aio) {
         return ngx_read_file(file, buf, size, offset);
     }
+
+#if (NGX_HAVE_IO_URING)
+    if (ngx_io_uring_enabled) {
+        return ngx_linux_io_uring_read(file, buf, size, offset, pool);
+    }
+#endif
 
     if (file->aio == NULL && ngx_file_aio_init(file, pool) != NGX_OK) {
         return NGX_ERROR;
