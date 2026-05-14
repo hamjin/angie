@@ -13,6 +13,20 @@
 #include <ngx_core.h>
 
 
+#if (NGX_OPENSSL)
+
+#include <openssl/evp.h>
+
+typedef struct {
+    EVP_MD_CTX  *ctx;
+} ngx_sha1_t;
+
+void ngx_sha1_init(ngx_sha1_t *ctx);
+void ngx_sha1_update(ngx_sha1_t *ctx, const void *data, size_t size);
+void ngx_sha1_final(u_char result[20], ngx_sha1_t *ctx);
+
+#else
+
 typedef struct {
     uint64_t  bytes;
     uint32_t  a, b, c, d, e, f;
@@ -23,6 +37,8 @@ typedef struct {
 void ngx_sha1_init(ngx_sha1_t *ctx);
 void ngx_sha1_update(ngx_sha1_t *ctx, const void *data, size_t size);
 void ngx_sha1_final(u_char result[20], ngx_sha1_t *ctx);
+
+#endif
 
 
 #endif /* _NGX_SHA1_H_INCLUDED_ */

@@ -11,25 +11,53 @@
 #include <ngx_md5.h>
 
 
+#if (NGX_OPENSSL)
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#define ngx_md5_ctx_new   EVP_MD_CTX_new
+#define ngx_md5_ctx_free  EVP_MD_CTX_free
+#else
+#define ngx_md5_ctx_new   EVP_MD_CTX_create
+#define ngx_md5_ctx_free  EVP_MD_CTX_destroy
+#endif
+#endif
+
+
+#if !(NGX_OPENSSL)
 static const u_char *ngx_md5_body(ngx_md5_t *ctx, const u_char *data,
     size_t size);
+#endif
 
 
 void
 ngx_md5_init(ngx_md5_t *ctx)
 {
+#if (NGX_OPENSSL)
+    ctx->ctx = ngx_md5_ctx_new();
+
+    if (ctx->ctx == NULL
+        || EVP_DigestInit_ex(ctx->ctx, EVP_md5(), NULL) == 0)
+    {
+        ngx_abort();
+    }
+#else
     ctx->a = 0x67452301;
     ctx->b = 0xefcdab89;
     ctx->c = 0x98badcfe;
     ctx->d = 0x10325476;
 
     ctx->bytes = 0;
+#endif
 }
 
 
 void
 ngx_md5_update(ngx_md5_t *ctx, const void *data, size_t size)
 {
+#if (NGX_OPENSSL)
+    if (EVP_DigestUpdate(ctx->ctx, data, size) == 0) {
+        ngx_abort();
+    }
+#else
     size_t  used, free;
 
     used = (size_t) (ctx->bytes & 0x3f);
@@ -55,12 +83,23 @@ ngx_md5_update(ngx_md5_t *ctx, const void *data, size_t size)
     }
 
     ngx_memcpy(ctx->buffer, data, size);
+#endif
 }
 
 
 void
 ngx_md5_final(u_char result[16], ngx_md5_t *ctx)
 {
+#if (NGX_OPENSSL)
+    unsigned int  len;
+
+    if (EVP_DigestFinal_ex(ctx->ctx, result, &len) == 0 || len != 16) {
+        ngx_abort();
+    }
+
+    ngx_md5_ctx_free(ctx->ctx);
+    ngx_memzero(ctx, sizeof(*ctx));
+#else
     size_t  used, free;
 
     used = (size_t) (ctx->bytes & 0x3f);
@@ -108,8 +147,11 @@ ngx_md5_final(u_char result[16], ngx_md5_t *ctx)
     result[15] = (u_char) (ctx->d >> 24);
 
     ngx_memzero(ctx, sizeof(*ctx));
+#endif
 }
 
+
+#if !(NGX_OPENSSL)
 
 /*
  * The basic MD5 functions.
@@ -281,3 +323,5 @@ ngx_md5_body(ngx_md5_t *ctx, const u_char *data, size_t size)
 
     return p;
 }
+
+#endif /* !NGX_OPENSSL */
