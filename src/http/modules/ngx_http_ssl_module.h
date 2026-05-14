@@ -69,6 +69,12 @@ typedef struct {
     ngx_str_t                       stapling_file;
     ngx_str_t                       stapling_responder;
 
+    ngx_flag_t                      dyn_rec_enable;
+    ngx_msec_t                      dyn_rec_timeout;
+    size_t                          dyn_rec_size_lo;
+    size_t                          dyn_rec_size_hi;
+    ngx_uint_t                      dyn_rec_threshold;
+
     ngx_open_file_t                *keylog_file;
 
 #if (NGX_HAVE_NTLS)
