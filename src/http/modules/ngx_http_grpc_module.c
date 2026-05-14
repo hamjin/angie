@@ -25,6 +25,9 @@ typedef struct {
     ngx_http_grpc_headers_t    headers;
     ngx_array_t               *headers_source;
 
+    ngx_uint_t                 headers_hash_max_size;
+    ngx_uint_t                 headers_hash_bucket_size;
+
     ngx_str_t                  host;
     ngx_uint_t                 host_set;
 
@@ -338,6 +341,20 @@ static ngx_command_t  ngx_http_grpc_commands[] = {
       ngx_conf_set_keyval_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_grpc_loc_conf_t, headers_source),
+      NULL },
+
+    { ngx_string("grpc_headers_hash_max_size"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_grpc_loc_conf_t, headers_hash_max_size),
+      NULL },
+
+    { ngx_string("grpc_headers_hash_bucket_size"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_grpc_loc_conf_t, headers_hash_bucket_size),
       NULL },
 
     { ngx_string("grpc_pass_header"),
@@ -4411,6 +4428,9 @@ ngx_http_grpc_create_loc_conf(ngx_conf_t *cf)
 
     conf->upstream.buffer_size = NGX_CONF_UNSET_SIZE;
 
+    conf->headers_hash_max_size = NGX_CONF_UNSET_UINT;
+    conf->headers_hash_bucket_size = NGX_CONF_UNSET_UINT;
+
     conf->upstream.hide_headers = NGX_CONF_UNSET_PTR;
     conf->upstream.pass_headers = NGX_CONF_UNSET_PTR;
 
@@ -4560,8 +4580,17 @@ ngx_http_grpc_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #endif
 
-    hash.max_size = 512;
-    hash.bucket_size = ngx_align(64, ngx_cacheline_size);
+    ngx_conf_merge_uint_value(conf->headers_hash_max_size,
+                              prev->headers_hash_max_size, 512);
+
+    ngx_conf_merge_uint_value(conf->headers_hash_bucket_size,
+                              prev->headers_hash_bucket_size, 64);
+
+    conf->headers_hash_bucket_size = ngx_align(conf->headers_hash_bucket_size,
+                                               ngx_cacheline_size);
+
+    hash.max_size = conf->headers_hash_max_size;
+    hash.bucket_size = conf->headers_hash_bucket_size;
     hash.name = "grpc_headers_hash";
 
     if (ngx_http_upstream_hide_headers_hash(cf, &conf->upstream,
@@ -4785,8 +4814,8 @@ ngx_http_grpc_init_headers(ngx_conf_t *cf, ngx_http_grpc_loc_conf_t *conf,
 
     hash.hash = &headers->hash;
     hash.key = ngx_hash_key_lc;
-    hash.max_size = 512;
-    hash.bucket_size = 64;
+    hash.max_size = conf->headers_hash_max_size;
+    hash.bucket_size = conf->headers_hash_bucket_size;
     hash.name = "grpc_headers_hash";
     hash.pool = cf->pool;
     hash.temp_pool = NULL;
