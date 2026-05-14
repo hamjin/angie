@@ -12,13 +12,35 @@
 #include <ngx_sha1.h>
 
 
+#if (NGX_OPENSSL)
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#define ngx_sha1_ctx_new   EVP_MD_CTX_new
+#define ngx_sha1_ctx_free  EVP_MD_CTX_free
+#else
+#define ngx_sha1_ctx_new   EVP_MD_CTX_create
+#define ngx_sha1_ctx_free  EVP_MD_CTX_destroy
+#endif
+#endif
+
+
+#if !(NGX_OPENSSL)
 static const u_char *ngx_sha1_body(ngx_sha1_t *ctx, const u_char *data,
     size_t size);
+#endif
 
 
 void
 ngx_sha1_init(ngx_sha1_t *ctx)
 {
+#if (NGX_OPENSSL)
+    ctx->ctx = ngx_sha1_ctx_new();
+
+    if (ctx->ctx == NULL
+        || EVP_DigestInit_ex(ctx->ctx, EVP_sha1(), NULL) == 0)
+    {
+        ngx_abort();
+    }
+#else
     ctx->a = 0x67452301;
     ctx->b = 0xefcdab89;
     ctx->c = 0x98badcfe;
@@ -26,12 +48,18 @@ ngx_sha1_init(ngx_sha1_t *ctx)
     ctx->e = 0xc3d2e1f0;
 
     ctx->bytes = 0;
+#endif
 }
 
 
 void
 ngx_sha1_update(ngx_sha1_t *ctx, const void *data, size_t size)
 {
+#if (NGX_OPENSSL)
+    if (EVP_DigestUpdate(ctx->ctx, data, size) == 0) {
+        ngx_abort();
+    }
+#else
     size_t  used, free;
 
     used = (size_t) (ctx->bytes & 0x3f);
@@ -57,12 +85,23 @@ ngx_sha1_update(ngx_sha1_t *ctx, const void *data, size_t size)
     }
 
     ngx_memcpy(ctx->buffer, data, size);
+#endif
 }
 
 
 void
 ngx_sha1_final(u_char result[20], ngx_sha1_t *ctx)
 {
+#if (NGX_OPENSSL)
+    unsigned int  len;
+
+    if (EVP_DigestFinal_ex(ctx->ctx, result, &len) == 0 || len != 20) {
+        ngx_abort();
+    }
+
+    ngx_sha1_ctx_free(ctx->ctx);
+    ngx_memzero(ctx, sizeof(*ctx));
+#else
     size_t  used, free;
 
     used = (size_t) (ctx->bytes & 0x3f);
@@ -114,8 +153,11 @@ ngx_sha1_final(u_char result[20], ngx_sha1_t *ctx)
     result[19] = (u_char) ctx->e;
 
     ngx_memzero(ctx, sizeof(*ctx));
+#endif
 }
 
+
+#if !(NGX_OPENSSL)
 
 /*
  * Helper functions.
@@ -292,3 +334,5 @@ ngx_sha1_body(ngx_sha1_t *ctx, const u_char *data, size_t size)
 
     return p;
 }
+
+#endif /* !NGX_OPENSSL */
