@@ -607,6 +607,43 @@ Currently file AIO is supported on FreeBSD 4.3+ and Linux 2.6.22+ only
 END
         exit 1
     fi
+
+    if [ $NGX_FILE_IO_URING != NO ]; then
+
+        ngx_feature="Linux io_uring support (liburing)"
+        ngx_feature_name="NGX_HAVE_IO_URING"
+        ngx_feature_run=no
+        ngx_feature_incs="#include <liburing.h>"
+        ngx_feature_path=
+        ngx_feature_libs="-luring"
+        ngx_feature_test="struct io_uring ring;
+                          struct io_uring_params params;
+                          memset(&params, 0, sizeof(params));
+                          (void) io_uring_queue_init_params(8, &ring, &params);
+                          (void) io_uring_get_sqe(&ring);
+                          (void) io_uring_prep_read;
+                          (void) io_uring_prep_readv;
+                          (void) io_uring_sqe_set_data;
+                          (void) io_uring_submit(&ring);
+                          (void) io_uring_cq_advance(&ring, 0);
+                          io_uring_queue_exit(&ring);"
+        . auto/feature
+
+        if [ $ngx_found = yes ]; then
+            CORE_SRCS="$CORE_SRCS $LINUX_IO_URING_SRCS"
+            CORE_LIBS="$CORE_LIBS -luring"
+        else
+            if [ $NGX_FILE_IO_URING = YES ]; then
+                cat << END
+
+$0: --with-file-aio-io_uring requires liburing development headers
+and library (>= 2.0) but they were not found.
+
+END
+                exit 1
+            fi
+        fi
+    fi
 fi
 
 

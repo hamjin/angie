@@ -98,7 +98,31 @@ struct io_event {
 typedef struct {
     ngx_uint_t  events;
     ngx_uint_t  aio_requests;
+    ngx_uint_t  aio_engine;
 } ngx_epoll_conf_t;
+
+
+#define NGX_EPOLL_AIO_AUTO      0
+#define NGX_EPOLL_AIO_NATIVE    1
+#define NGX_EPOLL_AIO_IO_URING  2
+
+#if (NGX_HAVE_FILE_AIO)
+static ngx_conf_enum_t  ngx_epoll_aio_engines[] = {
+    { ngx_string("auto"),     NGX_EPOLL_AIO_AUTO     },
+    { ngx_string("native"),   NGX_EPOLL_AIO_NATIVE   },
+    { ngx_string("io_uring"), NGX_EPOLL_AIO_IO_URING },
+    { ngx_null_string, 0 }
+};
+#endif
+
+
+#if (NGX_HAVE_IO_URING)
+extern ngx_uint_t   ngx_io_uring_enabled;
+ngx_int_t   ngx_linux_io_uring_setup(ngx_log_t *log, ngx_uint_t entries);
+void        ngx_linux_io_uring_done(void);
+int         ngx_linux_io_uring_fd(void);
+void        ngx_linux_io_uring_handler(ngx_event_t *ev);
+#endif
 
 
 static ngx_int_t ngx_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer);
@@ -148,6 +172,11 @@ aio_context_t               ngx_aio_ctx = 0;
 static ngx_event_t          ngx_eventfd_event;
 static ngx_connection_t     ngx_eventfd_conn;
 
+#if (NGX_HAVE_IO_URING)
+static ngx_event_t          ngx_io_uring_event;
+static ngx_connection_t     ngx_io_uring_conn;
+#endif
+
 #endif
 
 #if (NGX_HAVE_EPOLLRDHUP)
@@ -171,6 +200,15 @@ static ngx_command_t  ngx_epoll_commands[] = {
       0,
       offsetof(ngx_epoll_conf_t, aio_requests),
       NULL },
+
+#if (NGX_HAVE_FILE_AIO)
+    { ngx_string("worker_aio_engine"),
+      NGX_EVENT_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      0,
+      offsetof(ngx_epoll_conf_t, aio_engine),
+      &ngx_epoll_aio_engines },
+#endif
 
       ngx_null_command
 };
@@ -250,6 +288,50 @@ ngx_epoll_aio_init(ngx_cycle_t *cycle, ngx_epoll_conf_t *epcf)
 {
     int                 n;
     struct epoll_event  ee;
+
+#if (NGX_HAVE_IO_URING)
+    ngx_uint_t  engine;
+
+    engine = epcf->aio_engine;
+
+    if (engine == NGX_EPOLL_AIO_AUTO || engine == NGX_EPOLL_AIO_IO_URING) {
+        if (ngx_linux_io_uring_setup(cycle->log, epcf->aio_requests)
+            == NGX_OK)
+        {
+            ngx_io_uring_event.data = &ngx_io_uring_conn;
+            ngx_io_uring_event.handler = ngx_linux_io_uring_handler;
+            ngx_io_uring_event.log = cycle->log;
+            ngx_io_uring_event.active = 1;
+            ngx_io_uring_conn.fd = ngx_linux_io_uring_fd();
+            ngx_io_uring_conn.read = &ngx_io_uring_event;
+            ngx_io_uring_conn.log = cycle->log;
+
+            ee.events = EPOLLIN|EPOLLET;
+            ee.data.ptr = &ngx_io_uring_conn;
+
+            if (epoll_ctl(ep, EPOLL_CTL_ADD, ngx_linux_io_uring_fd(), &ee)
+                != -1)
+            {
+                return;
+            }
+
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                          "epoll_ctl(EPOLL_CTL_ADD, io_uring) failed");
+
+            ngx_linux_io_uring_done();
+        }
+
+        if (engine == NGX_EPOLL_AIO_IO_URING) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "worker_aio_engine io_uring requested but "
+                          "initialization failed");
+            ngx_file_aio = 0;
+            return;
+        }
+
+        /* fall through to native AIO when engine == auto */
+    }
+#endif
 
 #if (NGX_HAVE_SYS_EVENTFD_H)
     ngx_eventfd = eventfd(0, 0);
@@ -548,6 +630,12 @@ ngx_epoll_done(ngx_cycle_t *cycle)
 #endif
 
 #if (NGX_HAVE_FILE_AIO)
+
+#if (NGX_HAVE_IO_URING)
+    if (ngx_io_uring_enabled) {
+        ngx_linux_io_uring_done();
+    }
+#endif
 
     if (ngx_eventfd != -1) {
 
@@ -1034,6 +1122,7 @@ ngx_epoll_create_conf(ngx_cycle_t *cycle)
 
     epcf->events = NGX_CONF_UNSET;
     epcf->aio_requests = NGX_CONF_UNSET;
+    epcf->aio_engine = NGX_CONF_UNSET_UINT;
 
     return epcf;
 }
@@ -1046,6 +1135,7 @@ ngx_epoll_init_conf(ngx_cycle_t *cycle, void *conf)
 
     ngx_conf_init_uint_value(epcf->events, 512);
     ngx_conf_init_uint_value(epcf->aio_requests, 32);
+    ngx_conf_init_uint_value(epcf->aio_engine, NGX_EPOLL_AIO_AUTO);
 
     return NGX_CONF_OK;
 }

@@ -159,6 +159,10 @@ struct ngx_event_aio_s {
 #endif
 
     ngx_aiocb_t                aiocb;
+#if (NGX_HAVE_IO_URING)
+    /* iov lifetime tied to aio event; used when io_uring needs readv path */
+    struct iovec               iov;
+#endif
     ngx_event_t                event;
 };
 

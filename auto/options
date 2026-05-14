@@ -47,6 +47,7 @@ EVENT_POLL=NO
 USE_THREADS=NO
 
 NGX_FILE_AIO=NO
+NGX_FILE_IO_URING=AUTO
 
 QUIC_BPF=NO
 
@@ -245,6 +246,8 @@ do
         --with-threads)                  USE_THREADS=YES            ;;
 
         --with-file-aio)                 NGX_FILE_AIO=YES           ;;
+        --with-file-aio-io_uring)        NGX_FILE_AIO=YES; NGX_FILE_IO_URING=YES ;;
+        --without-file-aio-io_uring)     NGX_FILE_IO_URING=NO       ;;
 
         --without-quic_bpf_module)       QUIC_BPF=NONE              ;;
 
@@ -503,6 +506,11 @@ cat << END
   --with-threads                     enable thread pool support
 
   --with-file-aio                    enable file AIO support
+  --with-file-aio-io_uring           enable io_uring backend for file AIO
+                                     (requires liburing, Linux 5.1+, auto-
+                                     selected at runtime when available)
+  --without-file-aio-io_uring        do not probe liburing even if --with-
+                                     file-aio is set
 
   --without-quic_bpf_module          disable ngx_quic_bpf_module
 
