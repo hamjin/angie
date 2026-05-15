@@ -92,6 +92,13 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     }
 #endif
 
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        rc = ngx_http_spdy_read_request_body(r);
+        goto done;
+    }
+#endif
+
 #if (NGX_HTTP_V3)
     if (r->http_version == NGX_HTTP_VERSION_30) {
         rc = ngx_http_v3_read_request_body(r);
@@ -236,6 +243,18 @@ ngx_http_read_unbuffered_request_body(ngx_http_request_t *r)
 #if (NGX_HTTP_V2)
     if (r->stream) {
         rc = ngx_http_v2_read_unbuffered_request_body(r);
+
+        if (rc == NGX_OK) {
+            r->reading_body = 0;
+        }
+
+        return rc;
+    }
+#endif
+
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        rc = ngx_http_spdy_read_unbuffered_request_body(r);
 
         if (rc == NGX_OK) {
             r->reading_body = 0;
@@ -647,6 +666,13 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        r->spdy_stream->skip_data = 1;
+        return NGX_OK;
+    }
+#endif
+
 #if (NGX_HTTP_V3)
     if (r->http_version == NGX_HTTP_VERSION_30) {
         return NGX_OK;
@@ -948,6 +974,9 @@ ngx_http_test_expect(ngx_http_request_t *r)
         || r->http_version < NGX_HTTP_VERSION_11
 #if (NGX_HTTP_V2)
         || r->stream != NULL
+#endif
+#if (NGX_HTTP_SPDY)
+        || r->spdy_stream != NULL
 #endif
 #if (NGX_HTTP_V3)
         || r->connection->quic != NULL
