@@ -362,6 +362,8 @@ ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
     size_t                  w_cubic;
     ngx_uint_t              blocked;
     ngx_msec_t              now, timer;
+    uint64_t                delivered;
+    ngx_quic_cc_ack_sample_t sample;
     ngx_quic_congestion_t  *cg;
     ngx_quic_connection_t  *qc;
 
@@ -381,6 +383,25 @@ ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
     blocked = (cg->in_flight >= cg->window) ? 1 : 0;
 
     cg->in_flight -= f->plen;
+
+    if (cg->type != NGX_QUIC_CC_CUBIC) {
+        ngx_memzero(&sample, sizeof(ngx_quic_cc_ack_sample_t));
+        sample.pkt = f->packet;
+        sample.acked = f->plen;
+        sample.prior_delivered = f->prior_delivered;
+        sample.prior_time = f->prior_time;
+        sample.tx_in_flight = f->tx_in_flight;
+        sample.npackets = 1;
+        sample.interval = ngx_max((ngx_msec_t) 1, now - f->prior_time);
+        sample.send_elapsed = sample.interval;
+        delivered = cg->delivered + sample.acked;
+        sample.delivery_rate = (delivered - f->prior_delivered) * 1000
+                               / sample.interval;
+        sample.blocked = blocked;
+        sample.app_limited = f->app_limited;
+        ngx_quic_cc_ack(c, &sample);
+        goto done;
+    }
 
     /* prevent recovery_start from wrapping */
 
@@ -522,13 +543,7 @@ void
 ngx_quic_congestion_reset(ngx_quic_connection_t *qc)
 {
     ngx_memzero(&qc->congestion, sizeof(ngx_quic_congestion_t));
-
-    qc->congestion.window = ngx_min(10 * NGX_QUIC_MIN_INITIAL_SIZE,
-                                    ngx_max(2 * NGX_QUIC_MIN_INITIAL_SIZE,
-                                            14720));
-    qc->congestion.ssthresh = (size_t) -1;
-    qc->congestion.mtu = NGX_QUIC_MIN_INITIAL_SIZE;
-    qc->congestion.recovery_start = ngx_current_msec -1;
+    ngx_quic_cc_reset(qc);
 }
 
 
@@ -541,6 +556,12 @@ ngx_quic_congestion_idle(ngx_connection_t *c, ngx_uint_t idle)
 
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
+
+    if (cg->type != NGX_QUIC_CC_CUBIC) {
+        cg->idle = idle;
+        ngx_quic_cc_idle(c, idle);
+        return;
+    }
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
                    "quic congestion idle:%ui", idle);
@@ -886,8 +907,10 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
 static void
 ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
 {
+    size_t                  lost;
     ngx_uint_t              blocked;
     ngx_msec_t              now, timer;
+    ngx_quic_cc_loss_sample_t sample;
     ngx_quic_congestion_t  *cg;
     ngx_quic_connection_t  *qc;
 
@@ -904,8 +927,21 @@ ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
 
     blocked = (cg->in_flight >= cg->window) ? 1 : 0;
 
-    cg->in_flight -= f->plen;
+    lost = f->plen;
+    cg->in_flight -= lost;
     f->plen = 0;
+
+    if (cg->type != NGX_QUIC_CC_CUBIC) {
+        if (!f->ignore_loss) {
+            ngx_memzero(&sample, sizeof(ngx_quic_cc_loss_sample_t));
+            sample.pkt = f->packet;
+            sample.lost = lost;
+            sample.tx_in_flight = f->tx_in_flight;
+            sample.blocked = blocked;
+            ngx_quic_cc_loss(c, &sample);
+        }
+        goto done;
+    }
 
     timer = f->send_time - cg->recovery_start;
 

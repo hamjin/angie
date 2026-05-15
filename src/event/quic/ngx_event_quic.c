@@ -399,8 +399,6 @@ static ngx_int_t
 ngx_quic_client_start(ngx_connection_t *c, ngx_quic_header_t *pkt)
 {
     ngx_str_t               dcid;
-    ngx_queue_t            *q;
-    ngx_quic_frame_t       *f;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_connection_t  *qc;
 
@@ -462,15 +460,7 @@ ngx_quic_client_start(ngx_connection_t *c, ngx_quic_header_t *pkt)
      */
 
     ctx = ngx_quic_get_send_ctx(qc, NGX_QUIC_ENCRYPTION_INITIAL);
-
-    while (!ngx_queue_empty(&ctx->sent)) {
-        q = ngx_queue_head(&ctx->sent);
-        ngx_queue_remove(q);
-
-        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
-        ngx_quic_congestion_ack(c, f);
-        ngx_quic_free_frame(c, f);
-    }
+    ngx_quic_free_send_ctx(c, ctx);
 
     ctx->send_ack = 0;
     qc->pto_count = 0;
@@ -552,6 +542,8 @@ ngx_quic_new_connection(ngx_connection_t *c, ngx_quic_conf_t *conf,
         ngx_queue_init(&qc->send_ctx[i].frames);
         ngx_queue_init(&qc->send_ctx[i].sending);
         ngx_queue_init(&qc->send_ctx[i].sent);
+        ngx_queue_init(&qc->send_ctx[i].sending_packets);
+        ngx_queue_init(&qc->send_ctx[i].packets);
         qc->send_ctx[i].largest_pn = NGX_QUIC_UNSET_PN;
         qc->send_ctx[i].largest_ack = NGX_QUIC_UNSET_PN;
         qc->send_ctx[i].largest_range = NGX_QUIC_UNSET_PN;
@@ -563,6 +555,7 @@ ngx_quic_new_connection(ngx_connection_t *c, ngx_quic_conf_t *conf,
     qc->send_ctx[2].level = NGX_QUIC_ENCRYPTION_APPLICATION;
 
     ngx_queue_init(&qc->free_frames);
+    ngx_queue_init(&qc->free_packets);
 
     ngx_quic_init_rtt(qc);
 
@@ -962,8 +955,7 @@ ngx_quic_close_connection(ngx_connection_t *c, ngx_int_t rc)
 
         /* drop packets from retransmit queues, no ack is expected */
         for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
-            ngx_quic_free_frames(c, &qc->send_ctx[i].frames);
-            ngx_quic_free_frames(c, &qc->send_ctx[i].sent);
+            ngx_quic_free_send_ctx(c, &qc->send_ctx[i]);
         }
 
         if (qc->close.timer_set) {
@@ -1623,8 +1615,6 @@ ngx_quic_handle_payload(ngx_connection_t *c, ngx_quic_header_t *pkt)
 void
 ngx_quic_discard_ctx(ngx_connection_t *c, ngx_uint_t level)
 {
-    ngx_queue_t            *q;
-    ngx_quic_frame_t       *f;
     ngx_quic_socket_t      *qsock;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_connection_t  *qc;
@@ -1644,23 +1634,7 @@ ngx_quic_discard_ctx(ngx_connection_t *c, ngx_uint_t level)
     ctx = ngx_quic_get_send_ctx(qc, level);
 
     ngx_quic_free_buffer(c, &ctx->crypto);
-
-    while (!ngx_queue_empty(&ctx->sent)) {
-        q = ngx_queue_head(&ctx->sent);
-        ngx_queue_remove(q);
-
-        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
-        ngx_quic_congestion_ack(c, f);
-        ngx_quic_free_frame(c, f);
-    }
-
-    while (!ngx_queue_empty(&ctx->frames)) {
-        q = ngx_queue_head(&ctx->frames);
-        ngx_queue_remove(q);
-
-        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
-        ngx_quic_free_frame(c, f);
-    }
+    ngx_quic_free_send_ctx(c, ctx);
 
     if (level == NGX_QUIC_ENCRYPTION_INITIAL) {
         /* close temporary listener with initial dcid */

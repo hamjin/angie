@@ -24,7 +24,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 cryptx/)
-	->has_daemon('openssl')->plan(8)
+	->has_daemon('openssl')->plan(10)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -46,6 +46,22 @@ http {
     server {
         listen       127.0.0.1:%%PORT_8980_UDP%% quic;
         server_name  localhost;
+
+        location / { }
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8981_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr1;
+
+        location / { }
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8982_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr;
 
         location / { }
     }
@@ -130,6 +146,15 @@ $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
 
 ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
 is($frame->{headers}->{':status'}, 403, 'resend initial');
+
+for my $case ([8981, 'bbr1 retry success'], [8982, 'bbr retry success']) {
+	$s = Test::Nginx::HTTP3->new($case->[0]);
+	$sid = $s->new_stream();
+	$frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
+
+	($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+	is($frame->{headers}->{':status'}, 403, $case->[1]);
+}
 
 ###############################################################################
 

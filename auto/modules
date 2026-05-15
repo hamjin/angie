@@ -1533,6 +1533,7 @@ if [ $USE_OPENSSL_QUIC = YES ]; then
     ngx_module_name=ngx_quic_module
     ngx_module_incs=
     ngx_module_deps="src/event/quic/ngx_event_quic.h \
+                     src/event/quic/ngx_event_quic_cc.h \
                      src/event/quic/ngx_event_quic_transport.h \
                      src/event/quic/ngx_event_quic_protection.h \
                      src/event/quic/ngx_event_quic_connection.h \
@@ -1556,6 +1557,10 @@ if [ $USE_OPENSSL_QUIC = YES ]; then
                      src/event/quic/ngx_event_quic_streams.c \
                      src/event/quic/ngx_event_quic_ssl.c \
                      src/event/quic/ngx_event_quic_tokens.c \
+                     src/event/quic/ngx_event_quic_cc.c \
+                     src/event/quic/ngx_event_quic_cc_cubic.c \
+                     src/event/quic/ngx_event_quic_cc_bbr1.c \
+                     src/event/quic/ngx_event_quic_cc_bbr.c \
                      src/event/quic/ngx_event_quic_ack.c \
                      src/event/quic/ngx_event_quic_output.c \
                      src/event/quic/ngx_event_quic_socket.c \

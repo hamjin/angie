@@ -27,7 +27,7 @@ plan(skip_all => '127.0.0.20 local address required')
 	unless defined IO::Socket::INET->new( LocalAddr => '127.0.0.20' );
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 cryptx/)
-	->has_daemon('openssl')->plan(3);
+	->has_daemon('openssl')->plan(5);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
 
@@ -47,6 +47,26 @@ http {
     server {
         listen       127.0.0.1:%%PORT_8980_UDP%% quic;
         server_name  localhost;
+
+        location / {
+            add_header X-IP $remote_addr;
+        }
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8981_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr1;
+
+        location / {
+            add_header X-IP $remote_addr;
+        }
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8982_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr;
 
         location / {
             add_header X-IP $remote_addr;
@@ -142,5 +162,30 @@ $s->path_response($frame->{data});
 $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
 ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
 is($frame->{headers}{'x-ip'}, '127.0.0.1', 'remote addr on migration');
+
+for my $case ([8981, 'bbr1 migration'], [8982, 'bbr migration']) {
+	$s = Test::Nginx::HTTP3->new($case->[0]);
+	$s->new_connection_id(1, 0, "connection_id_1", "reset_token_0001");
+
+	$frames = $s->read(all => [{ type => 'NCID' }]);
+	($frame) = grep { $_->{type} eq "NCID" } @$frames;
+
+	$s->{socket} = IO::Socket::INET->new(
+		Proto => "udp",
+		LocalAddr => '127.0.0.20',
+		PeerAddr => '127.0.0.1:' . port($case->[0]),
+	);
+	$s->{scid} = "connection_id_1";
+	$s->{dcid} = $frame->{cid};
+	$s->ping();
+
+	$frames = $s->read(all => [{ type => 'PATH_CHALLENGE' }]);
+	($frame) = grep { $_->{type} eq "PATH_CHALLENGE" } @$frames;
+	$s->path_response($frame->{data});
+
+	$frames = $s->read(all => [{ sid => $s->new_stream(), fin => 1 }]);
+	($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+	is($frame->{headers}{'x-ip'}, '127.0.0.20', $case->[1]);
+}
 
 ###############################################################################

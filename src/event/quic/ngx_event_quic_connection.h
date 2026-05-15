@@ -46,6 +46,7 @@ typedef struct ngx_quic_keys_s        ngx_quic_keys_t;
 #include <ngx_event_quic_streams.h>
 #include <ngx_event_quic_ssl.h>
 #include <ngx_event_quic_tokens.h>
+#include <ngx_event_quic_cc.h>
 #include <ngx_event_quic_ack.h>
 #include <ngx_event_quic_output.h>
 #include <ngx_event_quic_socket.h>
@@ -186,13 +187,26 @@ typedef struct {
     size_t                            in_flight;
     size_t                            window;
     size_t                            ssthresh;
+    uint64_t                          pacing_rate;
+    uint64_t                          delivered;
+    uint64_t                          app_limited_at;
+    uint64_t                          bw_sample;
     size_t                            w_max;
     size_t                            w_est;
     size_t                            w_prior;
     size_t                            mtu;
+    ngx_msec_t                        delivered_time;
+    ngx_msec_t                        next_send;
+    ngx_msec_t                        round_start_time;
     ngx_msec_t                        recovery_start;
     ngx_msec_t                        idle_start;
     ngx_msec_t                        k;
+    ngx_uint_t                        type;
+    ngx_quic_cc_ops_t                *ops;
+    union {
+        ngx_quic_bbr1_state_t         bbr1;
+        ngx_quic_bbr_state_t          bbr;
+    } state;
     ngx_uint_t                        idle; /* unsigned  idle:1; */
 } ngx_quic_congestion_t;
 
@@ -218,6 +232,8 @@ struct ngx_quic_send_ctx_s {
     ngx_queue_t                       frames;      /* generated frames */
     ngx_queue_t                       sending;     /* frames assigned to pkt */
     ngx_queue_t                       sent;        /* frames waiting ACK */
+    ngx_queue_t                       sending_packets; /* datagrams pending I/O */
+    ngx_queue_t                       packets;     /* packets waiting ACK */
 
     uint64_t                          pending_ack; /* non sent ack-eliciting */
     uint64_t                          largest_range;
@@ -275,6 +291,7 @@ struct ngx_quic_connection_s {
     ngx_uint_t                        pto_count;
 
     ngx_queue_t                       free_frames;
+    ngx_queue_t                       free_packets;
     ngx_buf_t                        *free_bufs;
     ngx_buf_t                        *free_shadow_bufs;
 

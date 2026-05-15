@@ -261,19 +261,25 @@ typedef struct {
 
 
 typedef struct ngx_quic_frame_s                 ngx_quic_frame_t;
+typedef struct ngx_quic_packet_s                ngx_quic_packet_t;
 
 struct ngx_quic_frame_s {
     ngx_uint_t                                  type;
     ngx_uint_t                                  level;
     ngx_queue_t                                 queue;
+    ngx_quic_packet_t                          *packet;
     uint64_t                                    pnum;
+    uint64_t                                    prior_delivered;
     size_t                                      plen;
+    size_t                                      tx_in_flight;
     ngx_msec_t                                  send_time;
+    ngx_msec_t                                  prior_time;
     ssize_t                                     len;
     unsigned                                    need_ack:1;
     unsigned                                    pkt_need_ack:1;
     unsigned                                    ignore_congestion:1;
     unsigned                                    ignore_loss:1;
+    unsigned                                    app_limited:1;
 
     ngx_chain_t                                *data;
     union {
@@ -296,6 +302,24 @@ struct ngx_quic_frame_s {
         ngx_quic_path_challenge_frame_t         path_challenge;
         ngx_quic_path_challenge_frame_t         path_response;
     } u;
+};
+
+
+struct ngx_quic_packet_s {
+    ngx_queue_t                                  queue;
+    ngx_quic_frame_t                            *first;
+    uint64_t                                    pnum;
+    uint64_t                                    prior_delivered;
+    size_t                                      bytes;
+    size_t                                      tx_in_flight;
+    ngx_msec_t                                  send_time;
+    ngx_msec_t                                  prior_time;
+    uint64_t                                    path_seqnum;
+    ngx_uint_t                                  level;
+    unsigned                                    ack_eliciting:1;
+    unsigned                                    app_limited:1;
+    unsigned                                    ignore_loss:1;
+    unsigned                                    sampleable:1;
 };
 
 

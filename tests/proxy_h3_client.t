@@ -24,7 +24,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 proxy/)
-	->has_daemon('openssl')->plan(50)
+	->has_daemon('openssl')->plan(53)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -289,6 +289,33 @@ http {
             proxy_quic_host_key       "quic_host_key.dat";
         }
 
+        location /cc_cubic {
+            proxy_ssl_certificate     localhost.crt;
+            proxy_ssl_certificate_key localhost.key;
+            proxy_http_version        3;
+
+            proxy_quic_congestion_control cubic;
+            proxy_pass https://u;
+        }
+
+        location /cc_bbr1 {
+            proxy_ssl_certificate     localhost.crt;
+            proxy_ssl_certificate_key localhost.key;
+            proxy_http_version        3;
+
+            proxy_quic_congestion_control bbr1;
+            proxy_pass https://u;
+        }
+
+        location /cc_bbr {
+            proxy_ssl_certificate     localhost.crt;
+            proxy_ssl_certificate_key localhost.key;
+            proxy_http_version        3;
+
+            proxy_quic_congestion_control bbr;
+            proxy_pass https://u;
+        }
+
         client_header_timeout 1s;
 
         location /inline {
@@ -547,6 +574,15 @@ like($res, "/server=h3backend;protocol=h3/", "proxy_pass with variables");
 $res = http_get("/host_key");
 
 like($res, qr/HTTP\/1.1 200/, "response is 200 using host key");
+
+$res = http_get("/cc_cubic");
+like($res, "/server=h3backend;protocol=h3/", "proxy cubic response");
+
+$res = http_get("/cc_bbr1");
+like($res, "/server=h3backend;protocol=h3/", "proxy bbr1 response");
+
+$res = http_get("/cc_bbr");
+like($res, "/server=h3backend;protocol=h3/", "proxy bbr response");
 
 $res = http_method("/methods", "HEAD");
 like($res, "/HEAD/", "HEAD method OK");
@@ -871,4 +907,3 @@ Connection: close
 
 EOF
 }
-

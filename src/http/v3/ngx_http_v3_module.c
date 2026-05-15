@@ -26,6 +26,13 @@ static ngx_int_t ngx_http_v3_calculate_ssl_statistic(ngx_connection_t *c,
     ngx_uint_t initialized);
 #endif
 
+static ngx_conf_enum_t  ngx_http_quic_congestion_controls[] = {
+    { ngx_string("cubic"), NGX_QUIC_CC_CUBIC },
+    { ngx_string("bbr1"), NGX_QUIC_CC_BBR1 },
+    { ngx_string("bbr"), NGX_QUIC_CC_BBR },
+    { { 0, NULL }, 0 }
+};
+
 
 static ngx_command_t  ngx_http_v3_commands[] = {
 
@@ -77,6 +84,13 @@ static ngx_command_t  ngx_http_v3_commands[] = {
       NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_v3_srv_conf_t, quic.gso_enabled),
       NULL },
+
+    { ngx_string("quic_congestion_control"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_v3_srv_conf_t, quic.congestion_control),
+      &ngx_http_quic_congestion_controls },
 
     { ngx_string("quic_host_key"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
@@ -257,6 +271,7 @@ ngx_http_v3_create_srv_conf(ngx_conf_t *cf)
     h3scf->quic.max_concurrent_streams_uni = NGX_HTTP_V3_MAX_UNI_STREAMS;
     h3scf->quic.retry = NGX_CONF_UNSET;
     h3scf->quic.gso_enabled = NGX_CONF_UNSET;
+    h3scf->quic.congestion_control = NGX_CONF_UNSET_UINT;
     h3scf->quic.stream_close_code = NGX_HTTP_V3_ERR_NO_ERROR;
     h3scf->quic.stream_reject_code_bidi = NGX_HTTP_V3_ERR_REQUEST_REJECTED;
     h3scf->quic.active_connection_id_limit = NGX_CONF_UNSET_UINT;
@@ -302,6 +317,9 @@ ngx_http_v3_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->quic.retry, prev->quic.retry, 0);
     ngx_conf_merge_value(conf->quic.gso_enabled, prev->quic.gso_enabled, 0);
+    ngx_conf_merge_uint_value(conf->quic.congestion_control,
+                              prev->quic.congestion_control,
+                              NGX_QUIC_CC_CUBIC);
 
     ngx_conf_merge_str_value(conf->quic.host_key, prev->quic.host_key, "");
 

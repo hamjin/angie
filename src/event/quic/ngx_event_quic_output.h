@@ -32,6 +32,10 @@ ngx_int_t ngx_quic_send_ack(ngx_connection_t *c,
 ngx_int_t ngx_quic_send_ack_range(ngx_connection_t *c,
     ngx_quic_send_ctx_t *ctx, uint64_t smallest, uint64_t largest);
 
+ngx_quic_packet_t *ngx_quic_get_packet(ngx_quic_send_ctx_t *ctx,
+    uint64_t pnum);
+void ngx_quic_free_send_ctx(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx);
+
 ngx_int_t ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     size_t min, ngx_quic_path_t *path);
 size_t ngx_quic_path_limit(ngx_connection_t *c, ngx_quic_path_t *path,

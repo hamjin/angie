@@ -24,7 +24,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 cryptx/)
-	->has_daemon('openssl')->plan(3)
+	->has_daemon('openssl')->plan(7)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -43,6 +43,19 @@ http {
     server {
         listen       127.0.0.1:%%PORT_8980_UDP%% quic;
         server_name  localhost;
+        quic_congestion_control cubic;
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8981_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr1;
+    }
+
+    server {
+        listen       127.0.0.1:%%PORT_8982_UDP%% quic;
+        server_name  localhost;
+        quic_congestion_control bbr;
     }
 }
 
@@ -114,5 +127,19 @@ is($frame->{headers}->{':status'}, 200, 'request');
 
 ($frame) = grep { $_->{type} eq "DATA" } @$frames;
 is($frame->{'length'}, 13000, 'body');
+
+for my $case ([8981, 'bbr1'], [8982, 'bbr']) {
+	my ($port, $name) = @$case;
+
+	$s = Test::Nginx::HTTP3->new($port);
+	$sid = $s->new_stream();
+	$frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
+
+	($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+	is($frame->{headers}->{':status'}, 200, "$name request");
+
+	($frame) = grep { $_->{type} eq "DATA" } @$frames;
+	is($frame->{'length'}, 13000, "$name body");
+}
 
 ###############################################################################

@@ -49,6 +49,8 @@ static ngx_int_t ngx_quic_create_datagrams(ngx_connection_t *c);
 static void ngx_quic_commit_send(ngx_connection_t *c);
 static void ngx_quic_revert_send(ngx_connection_t *c,
     uint64_t preserved_pnum[NGX_QUIC_SEND_CTX_LAST]);
+static ngx_uint_t ngx_quic_has_ack_eliciting(ngx_quic_send_ctx_t *ctx,
+    ngx_uint_t ack_only);
 #if ((NGX_HAVE_UDP_SEGMENT) && (NGX_HAVE_MSGHDR_MSG_CONTROL))
 static ngx_uint_t ngx_quic_allow_segmentation(ngx_connection_t *c);
 static ngx_int_t ngx_quic_create_segments(ngx_connection_t *c);
@@ -124,6 +126,7 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
     u_char                 *p;
     uint64_t                preserved_pnum[NGX_QUIC_SEND_CTX_LAST];
     ngx_uint_t              i, pad;
+    ngx_msec_t              delay;
     ngx_quic_path_t        *path;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_congestion_t  *cg;
@@ -164,14 +167,33 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
                 return NGX_OK;
             }
 
+            if (cg->type != NGX_QUIC_CC_CUBIC
+                && ctx->level == NGX_QUIC_ENCRYPTION_APPLICATION
+                && ngx_quic_has_ack_eliciting(ctx,
+                                              cg->in_flight >= cg->window))
+            {
+                if (ngx_quic_cc_can_send(c, path->mtu, ngx_current_msec,
+                                         &delay)
+                    != NGX_OK)
+                {
+                    if (delay && !qc->push.timer_set) {
+                        ngx_add_timer(&qc->push, delay);
+                    }
+
+                    goto done;
+                }
+            }
+
             n = ngx_quic_output_packet(c, ctx, p, len, min,
                                        cg->in_flight >= cg->window);
             if (n == NGX_ERROR) {
                 return NGX_ERROR;
             }
 
-            p += n;
-            len -= n;
+            if (n) {
+                p += n;
+                len -= n;
+            }
         }
 
         len = p - dst;
@@ -196,6 +218,8 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
         path->sent += len;
 
     } while (cg->in_flight < cg->window);
+
+done:
 
     return NGX_OK;
 }
@@ -231,6 +255,7 @@ ngx_quic_commit_send(ngx_connection_t *c)
             ngx_queue_remove(q);
 
             if (f->pkt_need_ack && !qc->closing) {
+                f->tx_in_flight = cg->in_flight;
                 ngx_queue_insert_tail(&ctx->sent, q);
 
                 cg->in_flight += f->plen;
@@ -275,6 +300,35 @@ ngx_quic_revert_send(ngx_connection_t *c, uint64_t pnum[NGX_QUIC_SEND_CTX_LAST])
     }
 
     ngx_quic_congestion_idle(c, 1);
+}
+
+
+static ngx_uint_t
+ngx_quic_has_ack_eliciting(ngx_quic_send_ctx_t *ctx, ngx_uint_t ack_only)
+{
+    ngx_queue_t       *q;
+    ngx_quic_frame_t  *f;
+
+    for (q = ngx_queue_head(&ctx->frames);
+         q != ngx_queue_sentinel(&ctx->frames);
+         q = ngx_queue_next(q))
+    {
+        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+
+        if (ack_only && f->type != NGX_QUIC_FT_ACK) {
+            break;
+        }
+
+        if (f->type != NGX_QUIC_FT_ACK
+            && f->type != NGX_QUIC_FT_ACK_ECN
+            && f->type != NGX_QUIC_FT_CONNECTION_CLOSE
+            && f->type != NGX_QUIC_FT_CONNECTION_CLOSE_APP)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 
@@ -344,6 +398,7 @@ ngx_quic_create_segments(ngx_connection_t *c)
     ssize_t                 n;
     u_char                 *p, *end;
     ngx_uint_t              nseg, level;
+    ngx_msec_t              delay;
     ngx_quic_path_t        *path;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_congestion_t  *cg;
@@ -375,6 +430,21 @@ ngx_quic_create_segments(ngx_connection_t *c)
         len = ngx_min(segsize, (size_t) (end - p));
 
         if (len && cg->in_flight + (p - dst) < cg->window) {
+
+            if (cg->type != NGX_QUIC_CC_CUBIC
+                && ctx->level == NGX_QUIC_ENCRYPTION_APPLICATION
+                && ngx_quic_has_ack_eliciting(ctx, 0))
+            {
+                if (ngx_quic_cc_can_send(c, segsize, ngx_current_msec, &delay)
+                    != NGX_OK)
+                {
+                    if (delay && !qc->push.timer_set) {
+                        ngx_add_timer(&qc->push, delay);
+                    }
+
+                    break;
+                }
+            }
 
             n = ngx_quic_output_packet(c, ctx, p, len, len, 0);
             if (n == NGX_ERROR) {
@@ -650,6 +720,12 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 
         f->pnum = ctx->pnum;
         f->send_time = now;
+        f->prior_delivered = qc->congestion.delivered;
+        f->prior_time = qc->congestion.delivered_time;
+        f->tx_in_flight = qc->congestion.in_flight;
+        f->app_limited = (qc->congestion.app_limited_at != 0
+                          && qc->congestion.delivered
+                             < qc->congestion.app_limited_at);
         f->plen = 0;
 
         ngx_quic_log_frame(c->log, f, 1);
@@ -690,7 +766,6 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     if (pkt.need_ack) {
         q = ngx_queue_head(&ctx->frames);
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
-
         f->plen = res.len;
     }
 
@@ -1331,7 +1406,7 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     size_t                  max, max_payload, min_payload, pad;
     ssize_t                 len, sent;
     ngx_str_t               res;
-    ngx_msec_t              now;
+    ngx_msec_t              now, delay;
     ngx_quic_header_t       pkt;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_congestion_t  *cg;
@@ -1352,7 +1427,16 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
                    "quic sendto %s packet max:%uz min:%uz",
                    ngx_quic_level_name(ctx->level), max, min);
 
-    if (cg->in_flight >= cg->window && !frame->ignore_congestion) {
+    if (cg->type != NGX_QUIC_CC_CUBIC
+        && ctx->level == NGX_QUIC_ENCRYPTION_APPLICATION
+        && frame->need_ack
+        && !frame->ignore_congestion
+        && ngx_quic_cc_can_send(c, max, now, &delay) != NGX_OK)
+    {
+        if (delay && !qc->push.timer_set) {
+            ngx_add_timer(&qc->push, delay);
+        }
+
         ngx_quic_free_frame(c, frame);
         return NGX_AGAIN;
     }
@@ -1413,9 +1497,13 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
         ngx_quic_free_frame(c, frame);
         return NGX_ERROR;
     }
-
     frame->pnum = ctx->pnum;
     frame->send_time = now;
+    frame->prior_delivered = cg->delivered;
+    frame->prior_time = cg->delivered_time;
+    frame->tx_in_flight = cg->in_flight;
+    frame->app_limited = (cg->app_limited_at != 0
+                          && cg->delivered < cg->app_limited_at);
     frame->plen = res.len;
 
     ctx->pnum++;
@@ -1430,7 +1518,7 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
 
     if (frame->need_ack && !qc->closing) {
         ngx_queue_insert_tail(&ctx->sent, &frame->queue);
-
+        frame->tx_in_flight = cg->in_flight;
         cg->in_flight += frame->plen;
 
     } else {
@@ -1449,6 +1537,42 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     ngx_quic_set_lost_timer(c);
 
     return NGX_OK;
+}
+
+
+ngx_quic_packet_t *
+ngx_quic_get_packet(ngx_quic_send_ctx_t *ctx, uint64_t pnum)
+{
+    ngx_queue_t       *q;
+    ngx_quic_packet_t *pkt;
+
+    for (q = ngx_queue_head(&ctx->packets);
+         q != ngx_queue_sentinel(&ctx->packets);
+         q = ngx_queue_next(q))
+    {
+        pkt = ngx_queue_data(q, ngx_quic_packet_t, queue);
+
+        if (pkt->pnum == pnum) {
+            return pkt;
+        }
+
+        if (pkt->pnum > pnum) {
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+
+void
+ngx_quic_free_send_ctx(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
+{
+    ngx_quic_free_frames(c, &ctx->frames);
+    ngx_quic_free_frames(c, &ctx->sending);
+    ngx_quic_free_packets(c, &ctx->sending_packets);
+    ngx_quic_free_frames(c, &ctx->sent);
+    ngx_quic_free_packets(c, &ctx->packets);
 }
 
 
