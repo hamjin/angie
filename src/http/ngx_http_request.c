@@ -10,6 +10,10 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#if (NGX_HTTP_SPDY)
+#include <ngx_http_spdy_module.h>
+#endif
+
 
 #if (NGX_API)
 
@@ -724,6 +728,19 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
 
 #endif
 
+#if (NGX_HTTP_SPDY)
+    {
+    ngx_http_spdy_srv_conf_t  *sscf;
+
+    sscf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_spdy_module);
+
+    if (!hc->ssl && (sscf->enable || hc->addr_conf->spdy)) {
+        ngx_http_spdy_init(rev);
+        return;
+    }
+    }
+#endif
+
     c->log->action = "reading client request line";
 
     ngx_reusable_connection(c, 0);
@@ -1089,6 +1106,52 @@ ngx_http_ssl_handshake_handler(ngx_connection_t *c)
                 return;
             }
         }
+        }
+#endif
+
+#if (NGX_HTTP_SPDY                                                            \
+     && (defined TLSEXT_TYPE_application_layer_protocol_negotiation           \
+         || (defined TLSEXT_TYPE_next_proto_neg                              \
+             && !defined OPENSSL_NO_NEXTPROTONEG)))
+        {
+        unsigned int             len;
+        const unsigned char     *data;
+        ngx_http_spdy_srv_conf_t  *sscf;
+
+        sscf = ngx_http_get_module_srv_conf(hc->conf_ctx,
+                                            ngx_http_spdy_module);
+
+        if (sscf->enable || hc->addr_conf->spdy) {
+#ifdef TLSEXT_TYPE_application_layer_protocol_negotiation
+        SSL_get0_alpn_selected(c->ssl->connection, &data, &len);
+
+        if (len == sizeof(NGX_SPDY_PROTO_31) - 1
+            && ngx_strncmp(data, NGX_SPDY_PROTO_31, len) == 0)
+        {
+            ngx_http_spdy_init(c->read);
+            return;
+        }
+
+        if (len) {
+            goto spdy_done;
+        }
+#endif
+
+#if (defined TLSEXT_TYPE_next_proto_neg && !defined OPENSSL_NO_NEXTPROTONEG)
+        SSL_get0_next_proto_negotiated(c->ssl->connection, &data, &len);
+
+        if ((len == sizeof(NGX_SPDY_PROTO_31) - 1
+             && ngx_strncmp(data, NGX_SPDY_PROTO_31, len) == 0)
+            || (len == sizeof(NGX_SPDY_PROTO_30) - 1
+                && ngx_strncmp(data, NGX_SPDY_PROTO_30, len) == 0))
+        {
+            ngx_http_spdy_init(c->read);
+            return;
+        }
+#endif
+        }
+    spdy_done:
+        ;
         }
 #endif
 
@@ -3198,6 +3261,13 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        ngx_http_close_request(r, 0);
+        return;
+    }
+#endif
+
 #if (NGX_HTTP_V3)
     if (r->connection->quic) {
         ngx_http_close_request(r, 0);
@@ -3415,6 +3485,19 @@ ngx_http_test_reading(ngx_http_request_t *r)
 #if (NGX_HTTP_V2)
 
     if (r->stream) {
+        if (c->error) {
+            err = 0;
+            goto closed;
+        }
+
+        return;
+    }
+
+#endif
+
+#if (NGX_HTTP_SPDY)
+
+    if (r->spdy_stream) {
         if (c->error) {
             err = 0;
             goto closed;
@@ -4158,6 +4241,13 @@ ngx_http_close_request(ngx_http_request_t *r, ngx_int_t rc)
 #if (NGX_HTTP_V2)
     if (r->stream) {
         ngx_http_v2_close_stream(r->stream, rc);
+        return;
+    }
+#endif
+
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        ngx_http_spdy_close_stream(r->spdy_stream, rc);
         return;
     }
 #endif

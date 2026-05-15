@@ -609,6 +609,13 @@ ngx_http_upstream_init(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_SPDY)
+    if (r->spdy_stream) {
+        ngx_http_upstream_init_request(r);
+        return;
+    }
+#endif
+
 #if (NGX_HTTP_V3)
     if (c->quic) {
         ngx_http_upstream_init_request(r);

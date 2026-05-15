@@ -10,12 +10,20 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+#include <openssl/core_names.h>
+#endif
+
 #if (NGX_QUIC_OPENSSL_COMPAT)
 #include <ngx_event_quic_openssl_compat.h>
 #endif
 
 #if (NGX_HTTP_ACME)
 #include <ngx_acme.h>
+#endif
+
+#if (NGX_HTTP_SPDY)
+#include <ngx_http_spdy_module.h>
 #endif
 
 
@@ -33,6 +41,10 @@ typedef ngx_int_t (*ngx_ssl_variable_handler_pt)(ngx_connection_t *c,
 static int ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn,
     const unsigned char **out, unsigned char *outlen,
     const unsigned char *in, unsigned int inlen, void *arg);
+#endif
+#if (defined TLSEXT_TYPE_next_proto_neg && !defined OPENSSL_NO_NEXTPROTONEG)
+static int ngx_http_ssl_npn_advertised(ngx_ssl_conn_t *ssl_conn,
+    const unsigned char **out, unsigned int *outlen, void *arg);
 #endif
 
 static ngx_int_t ngx_http_ssl_static_variable(ngx_http_request_t *r,
@@ -697,16 +709,19 @@ ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn, const unsigned char **out,
 #if (NGX_DEBUG)
     unsigned int             i;
 #endif
-#if (NGX_HTTP_V2 || NGX_HTTP_V3)
+#if (NGX_HTTP_V2 || NGX_HTTP_V3 || NGX_HTTP_SPDY)
     ngx_http_connection_t   *hc;
 #endif
 #if (NGX_HTTP_V2)
     ngx_http_v2_srv_conf_t  *h2scf;
 #endif
+#if (NGX_HTTP_SPDY)
+    ngx_http_spdy_srv_conf_t *sscf;
+#endif
 #if (NGX_HTTP_V3)
     ngx_http_v3_srv_conf_t  *h3scf;
 #endif
-#if (NGX_HTTP_V2 || NGX_HTTP_V3 || NGX_DEBUG)
+#if (NGX_HTTP_V2 || NGX_HTTP_V3 || NGX_HTTP_SPDY || NGX_DEBUG)
     ngx_connection_t        *c;
 
     c = ngx_ssl_get_connection(ssl_conn);
@@ -720,7 +735,7 @@ ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn, const unsigned char **out,
     }
 #endif
 
-#if (NGX_HTTP_V2 || NGX_HTTP_V3)
+#if (NGX_HTTP_V2 || NGX_HTTP_V3 || NGX_HTTP_SPDY)
     hc = c->data;
 #endif
 
@@ -750,12 +765,38 @@ ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn, const unsigned char **out,
     } else
 #endif
     {
+#if (NGX_HTTP_SPDY)
+        sscf = ngx_http_get_module_srv_conf(hc->conf_ctx,
+                                            ngx_http_spdy_module);
+#endif
+
+#if (NGX_HTTP_V2 && NGX_HTTP_SPDY)
+        h2scf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_v2_module);
+
+        if ((h2scf->enable || hc->addr_conf->http2)
+            && (sscf->enable || hc->addr_conf->spdy))
+        {
+            srv = (unsigned char *) NGX_HTTP_V2_ALPN_PROTO
+                                    NGX_SPDY_ALPN_PROTO_31
+                                    NGX_HTTP_ALPN_PROTOS;
+            srvlen = sizeof(NGX_HTTP_V2_ALPN_PROTO NGX_SPDY_ALPN_PROTO_31
+                            NGX_HTTP_ALPN_PROTOS) - 1;
+
+        } else
+#endif
 #if (NGX_HTTP_V2)
         h2scf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_v2_module);
 
         if (h2scf->enable || hc->addr_conf->http2) {
             srv = (unsigned char *) NGX_HTTP_V2_ALPN_PROTO NGX_HTTP_ALPN_PROTOS;
             srvlen = sizeof(NGX_HTTP_V2_ALPN_PROTO NGX_HTTP_ALPN_PROTOS) - 1;
+
+        } else
+#endif
+#if (NGX_HTTP_SPDY)
+        if (sscf->enable || hc->addr_conf->spdy) {
+            srv = (unsigned char *) NGX_SPDY_ALPN_PROTO_31 NGX_HTTP_ALPN_PROTOS;
+            srvlen = sizeof(NGX_SPDY_ALPN_PROTO_31 NGX_HTTP_ALPN_PROTOS) - 1;
 
         } else
 #endif
@@ -778,6 +819,77 @@ ngx_http_ssl_alpn_select(ngx_ssl_conn_t *ssl_conn, const unsigned char **out,
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "SSL ALPN selected: %*s", (size_t) *outlen, *out);
+
+    return SSL_TLSEXT_ERR_OK;
+}
+
+#endif
+
+
+#if (defined TLSEXT_TYPE_next_proto_neg && !defined OPENSSL_NO_NEXTPROTONEG)
+
+static int
+ngx_http_ssl_npn_advertised(ngx_ssl_conn_t *ssl_conn,
+    const unsigned char **out, unsigned int *outlen, void *arg)
+{
+#if (NGX_HTTP_V2 || NGX_HTTP_SPDY)
+    ngx_connection_t       *c;
+    ngx_http_connection_t  *hc;
+#endif
+#if (NGX_HTTP_V2)
+    ngx_http_v2_srv_conf_t *h2scf;
+#endif
+#if (NGX_HTTP_SPDY)
+    ngx_http_spdy_srv_conf_t *sscf;
+#endif
+
+#if (NGX_HTTP_V2 || NGX_HTTP_SPDY)
+    c = ngx_ssl_get_connection(ssl_conn);
+    hc = c->data;
+#endif
+
+#if (NGX_HTTP_SPDY)
+    sscf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_spdy_module);
+#endif
+
+#if (NGX_HTTP_V2 && NGX_HTTP_SPDY)
+    h2scf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_v2_module);
+
+    if ((h2scf->enable || hc->addr_conf->http2)
+        && (sscf->enable || hc->addr_conf->spdy))
+    {
+        *out = (unsigned char *) NGX_HTTP_V2_ALPN_PROTO
+                               NGX_SPDY_NPN_ADVERTISE
+                               NGX_HTTP_ALPN_PROTOS;
+        *outlen = sizeof(NGX_HTTP_V2_ALPN_PROTO NGX_SPDY_NPN_ADVERTISE
+                         NGX_HTTP_ALPN_PROTOS) - 1;
+
+        return SSL_TLSEXT_ERR_OK;
+    }
+#endif
+
+#if (NGX_HTTP_V2)
+    h2scf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_v2_module);
+
+    if (h2scf->enable || hc->addr_conf->http2) {
+        *out = (unsigned char *) NGX_HTTP_V2_ALPN_PROTO NGX_HTTP_ALPN_PROTOS;
+        *outlen = sizeof(NGX_HTTP_V2_ALPN_PROTO NGX_HTTP_ALPN_PROTOS) - 1;
+
+        return SSL_TLSEXT_ERR_OK;
+    }
+#endif
+
+#if (NGX_HTTP_SPDY)
+    if (sscf->enable || hc->addr_conf->spdy) {
+        *out = (unsigned char *) NGX_SPDY_NPN_ADVERTISE NGX_HTTP_ALPN_PROTOS;
+        *outlen = sizeof(NGX_SPDY_NPN_ADVERTISE NGX_HTTP_ALPN_PROTOS) - 1;
+
+        return SSL_TLSEXT_ERR_OK;
+    }
+#endif
+
+    *out = (unsigned char *) NGX_HTTP_ALPN_PROTOS;
+    *outlen = sizeof(NGX_HTTP_ALPN_PROTOS) - 1;
 
     return SSL_TLSEXT_ERR_OK;
 }
@@ -1067,6 +1179,11 @@ ngx_http_ssl_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 #ifdef TLSEXT_TYPE_application_layer_protocol_negotiation
     SSL_CTX_set_alpn_select_cb(conf->ssl.ctx, ngx_http_ssl_alpn_select, NULL);
+#endif
+
+#if (defined TLSEXT_TYPE_next_proto_neg && !defined OPENSSL_NO_NEXTPROTONEG)
+    SSL_CTX_set_next_protos_advertised_cb(conf->ssl.ctx,
+                                          ngx_http_ssl_npn_advertised, NULL);
 #endif
 
     if (ngx_ssl_ciphers(cf, &conf->ssl, &conf->ciphers,
@@ -2331,9 +2448,15 @@ ngx_api_http_ssl_time_info(ngx_api_entry_data_t data, ngx_api_ctx_t *actx,
 static void
 ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
 {
+#if (OPENSSL_VERSION_NUMBER < 0x30000000L)
     int            nid;
-    u_char        *s, *end;
     const EC_KEY  *ec;
+#endif
+    u_char        *s, *end;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+    char           group[80];
+    size_t         group_len;
+#endif
 
     if (key == NULL) {
         *size = 0;
@@ -2352,6 +2475,19 @@ ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
         break;
 
     case EVP_PKEY_EC:
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+        group_len = 0;
+
+        if (EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME,
+                                           group, sizeof(group), &group_len)
+            && group_len != 0)
+        {
+            s = ngx_slprintf(buf, end, "EC (%s)", group);
+
+        } else {
+            s = ngx_slprintf(buf, end, "EC");
+        }
+#else
         ec = EVP_PKEY_get0_EC_KEY(key);
         if (ec != NULL) {
             nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec));
@@ -2362,6 +2498,7 @@ ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
         } else {
             s = ngx_slprintf(buf, end, "EC");
         }
+#endif
         break;
 
     default:

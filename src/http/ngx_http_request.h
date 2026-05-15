@@ -463,6 +463,7 @@ struct ngx_http_request_s {
     ngx_uint_t                        err_status;
 
     ngx_http_connection_t            *http_connection;
+    ngx_http_spdy_stream_t           *spdy_stream;
     ngx_http_v2_stream_t             *stream;
     ngx_http_v3_parse_t              *v3_parse;
 

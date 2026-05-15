@@ -176,6 +176,7 @@ sub has_module($) {
 		realip	=> '--with-http_realip_module',
 		sub	=> '--with-http_sub_module',
 		acme	=> '--with-http_acme_module',
+		http_spdy => '--with-http_spdy_module',
 		debug   => '--with-debug',
 		quic_bpf=> '(?s)^(?!.*--without-quic_bpf_module)',
 		charset	=> '(?s)^(?!.*--without-http_charset_module)',

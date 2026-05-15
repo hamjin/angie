@@ -2704,6 +2704,9 @@ ngx_http_subrequest(ngx_http_request_t *r,
 #if (NGX_HTTP_V2)
     sr->stream = r->stream;
 #endif
+#if (NGX_HTTP_SPDY)
+    sr->spdy_stream = r->spdy_stream;
+#endif
 
     sr->method = NGX_HTTP_GET;
     sr->http_version = r->http_version;
@@ -4740,6 +4743,23 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
         }
 
+        if (ngx_strcmp(value[n].data, "spdy") == 0) {
+#if (NGX_HTTP_SPDY)
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                               "the \"listen ... spdy\" directive "
+                               "is deprecated, use "
+                               "the \"spdy\" directive instead");
+
+            lsopt.spdy = 1;
+            continue;
+#else
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "the \"spdy\" parameter requires "
+                               "ngx_http_spdy_module");
+            return NGX_CONF_ERROR;
+#endif
+        }
+
         if (ngx_strcmp(value[n].data, "quic") == 0) {
 #if (NGX_HTTP_V3)
             lsopt.quic = 1;
@@ -4892,6 +4912,12 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #if (NGX_HTTP_V2)
         if (lsopt.http2) {
             return "\"http2\" parameter is incompatible with \"quic\"";
+        }
+#endif
+
+#if (NGX_HTTP_SPDY)
+        if (lsopt.spdy) {
+            return "\"spdy\" parameter is incompatible with \"quic\"";
         }
 #endif
 
