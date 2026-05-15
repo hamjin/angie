@@ -10,6 +10,10 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+#include <openssl/core_names.h>
+#endif
+
 #if (NGX_ZLIB && defined TLSEXT_cert_compression_zlib                         \
      && !defined(BABASSL_VERSION_NUMBER))
 #define NGX_HAVE_CERT_ZLIB_COMPRESSION  1
@@ -8049,9 +8053,15 @@ ngx_api_http_ssl_time_info(ngx_api_entry_data_t data, ngx_api_ctx_t *actx,
 static void
 ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
 {
+#if (OPENSSL_VERSION_NUMBER < 0x30000000L)
     int            nid;
-    u_char        *s, *end;
     const EC_KEY  *ec;
+#endif
+    u_char        *s, *end;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+    char           group[80];
+    size_t         group_len;
+#endif
 
     if (key == NULL) {
         *size = 0;
@@ -8070,6 +8080,19 @@ ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
         break;
 
     case EVP_PKEY_EC:
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+        group_len = 0;
+
+        if (EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME,
+                                           group, sizeof(group), &group_len)
+            && group_len != 0)
+        {
+            s = ngx_slprintf(buf, end, "EC (%s)", group);
+
+        } else {
+            s = ngx_slprintf(buf, end, "EC");
+        }
+#else
         ec = EVP_PKEY_get0_EC_KEY(key);
         if (ec != NULL) {
             nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec));
@@ -8080,6 +8103,7 @@ ngx_api_cert_key_info(EVP_PKEY *key, u_char *buf, size_t *size)
         } else {
             s = ngx_slprintf(buf, end, "EC");
         }
+#endif
         break;
 
     default:
