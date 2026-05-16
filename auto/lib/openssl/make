@@ -3,6 +3,38 @@
 # Copyright (C) Nginx, Inc.
 
 
+if [ $USE_ZLIB_NG = YES ]; then
+    ngx_openssl_opt=
+    ngx_openssl_zlib_conflict=NO
+
+    for ngx_opt in $OPENSSL_OPT; do
+        case "$ngx_opt" in
+            zlib | enable-zlib | no-zlib \
+            | zlib-dynamic | enable-zlib-dynamic | no-zlib-dynamic \
+            | --with-zlib-include=* | --with-zlib-lib=*)
+                ngx_openssl_zlib_conflict=YES
+            ;;
+
+            *)
+                ngx_openssl_opt="$ngx_openssl_opt $ngx_opt"
+            ;;
+        esac
+    done
+
+    if [ $ngx_openssl_zlib_conflict = YES ]; then
+        cat << END
+
+$0: warning: native zlib-ng support is incompatible with OpenSSL zlib options.
+OpenSSL zlib-related options in --with-openssl-opt are ignored and replaced
+with "no-zlib" for the OpenSSL subbuild.
+
+END
+    fi
+
+    OPENSSL_OPT="$ngx_openssl_opt no-zlib"
+fi
+
+
 case "$CC" in
 
     cl)

@@ -28,11 +28,19 @@ case $OPENSSL in
     *)     echo "  + using OpenSSL library: $OPENSSL" ;;
 esac
 
-case $ZLIB in
-    YES)   echo "  + using system zlib library" ;;
-    NONE)  echo "  + zlib library is not used" ;;
-    *)     echo "  + using zlib library: $ZLIB" ;;
-esac
+if [ $USE_ZLIB_NG = YES ]; then
+    case $ZLIB_NG in
+        YES)   echo "  + using system native zlib-ng library" ;;
+        NONE)  echo "  + native zlib-ng library selection is incomplete" ;;
+        *)     echo "  + using native zlib-ng library: $ZLIB_NG" ;;
+    esac
+else
+    case $ZLIB in
+        YES)   echo "  + using system zlib library" ;;
+        NONE)  echo "  + zlib library is not used" ;;
+        *)     echo "  + using zlib library: $ZLIB" ;;
+    esac
+fi
 
 case $NGX_LIBATOMIC in
     YES)   echo "  + using system libatomic_ops library" ;;

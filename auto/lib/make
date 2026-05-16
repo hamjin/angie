@@ -11,7 +11,12 @@ if [ $OPENSSL != NONE -a $OPENSSL != NO -a $OPENSSL != YES ]; then
     . auto/lib/openssl/make
 fi
 
-if [ $ZLIB != NONE -a $ZLIB != NO -a $ZLIB != YES ]; then
+if [ $USE_ZLIB_NG = YES ]; then
+    if [ $ZLIB_NG != NONE -a $ZLIB_NG != NO -a $ZLIB_NG != YES ]; then
+        . auto/lib/zlib-ng/make
+    fi
+
+elif [ $ZLIB != NONE -a $ZLIB != NO -a $ZLIB != YES ]; then
     . auto/lib/zlib/make
 fi
 

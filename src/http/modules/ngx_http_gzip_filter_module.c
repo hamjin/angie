@@ -10,7 +10,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include <zlib.h>
+#include <ngx_zlib.h>
 
 
 typedef struct {
@@ -765,7 +765,7 @@ ngx_http_gzip_filter_deflate(ngx_http_request_t *r, ngx_http_gzip_ctx_t *ctx)
                    ctx->in_buf, ctx->in_buf->pos);
 
     if (ctx->zstream.next_in) {
-        ctx->in_buf->pos = ctx->zstream.next_in;
+        ctx->in_buf->pos = (u_char *) ctx->zstream.next_in;
 
         if (ctx->zstream.avail_in == 0) {
             ctx->zstream.next_in = NULL;

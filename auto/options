@@ -187,6 +187,9 @@ USE_ZLIB=NO
 ZLIB=NONE
 ZLIB_OPT=
 ZLIB_ASM=NO
+USE_ZLIB_NG=NO
+ZLIB_NG=NONE
+ZLIB_NG_OPT=
 
 USE_PERL=NO
 NGX_PERL=perl
@@ -456,6 +459,9 @@ $0: warning: the \"--with-sha1-asm\" option is deprecated"
         --with-zlib=*)                   ZLIB="$value"              ;;
         --with-zlib-opt=*)               ZLIB_OPT="$value"          ;;
         --with-zlib-asm=*)               ZLIB_ASM="$value"          ;;
+        --with-zlib-ng)                  USE_ZLIB_NG=YES; ZLIB_NG=NONE ;;
+        --with-zlib-ng=*)                USE_ZLIB_NG=YES; ZLIB_NG="$value" ;;
+        --with-zlib-ng-opt=*)            ZLIB_NG_OPT="$value"       ;;
 
         --with-libatomic)                NGX_LIBATOMIC=YES          ;;
         --with-libatomic=*)              NGX_LIBATOMIC="$value"     ;;
@@ -678,6 +684,10 @@ cat << END
   --with-zlib-asm=CPU                use zlib assembler sources optimized
                                      for the specified CPU, valid values:
                                      pentium, pentiumpro
+  --with-zlib-ng                     force native zlib-ng library usage
+  --with-zlib-ng=DIR                 set path to native zlib-ng library sources
+  --with-zlib-ng-opt=OPTIONS         set additional build options for native
+                                     zlib-ng
 
   --with-libatomic                   force libatomic_ops library usage
   --with-libatomic=DIR               set path to libatomic_ops library sources
@@ -690,6 +700,48 @@ cat << END
 END
 
     exit 1
+fi
+
+
+if [ $USE_ZLIB_NG = YES -o "$ZLIB_NG" != NONE -o -n "$ZLIB_NG_OPT" ]; then
+
+    if [ $USE_ZLIB_NG != YES ]; then
+cat << END
+
+$0: error: the --with-zlib-ng-opt option requires --with-zlib-ng=<path>.
+
+END
+        exit 1
+    fi
+
+    if [ "$ZLIB_NG" = NONE -a -n "$ZLIB_NG_OPT" ]; then
+cat << END
+
+$0: error: the --with-zlib-ng-opt option requires --with-zlib-ng=<path>.
+
+END
+        exit 1
+    fi
+
+    if [ "$ZLIB" != NONE ]; then
+cat << END
+
+$0: error: the --with-zlib-ng and --with-zlib options are mutually exclusive.
+
+END
+        exit 1
+    fi
+
+    if [ $ZLIB_ASM != NO ]; then
+cat << END
+
+$0: error: the --with-zlib-asm=CPU option is not supported with --with-zlib-ng.
+
+END
+        exit 1
+    fi
+
+    USE_ZLIB=YES
 fi
 
 

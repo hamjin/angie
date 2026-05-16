@@ -12,7 +12,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include <zlib.h>
+#include <ngx_zlib.h>
 
 
 #define NGX_SPDY_VERSION              3

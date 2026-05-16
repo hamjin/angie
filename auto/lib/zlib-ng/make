@@ -1,0 +1,24 @@
+# Copyright (C) 2024 Web Server LLC
+# Copyright (C) Igor Sysoev
+# Copyright (C) Nginx, Inc.
+
+
+if [ "$NGX_SYSTEM" != "Linux" -o "$NGX_PLATFORM" = win32 ]; then
+    echo "$0: error: native zlib-ng source builds are supported on Linux only."
+    echo
+    exit 1
+fi
+
+
+cat << END                                                >> $NGX_MAKEFILE
+
+$ZLIB_NG/zlib-ng.h $ZLIB_NG/zconf-ng.h:	$NGX_MAKEFILE
+	cd $ZLIB_NG \\
+	&& (\$(MAKE) distclean >/dev/null 2>&1 || true) \\
+	&& CFLAGS="-std=gnu17" CC="\$(CC)" ./configure --static $ZLIB_NG_OPT
+
+$ZLIB_NG/libz-ng.a:	$ZLIB_NG/zlib-ng.h $ZLIB_NG/zconf-ng.h
+	cd $ZLIB_NG \\
+	&& \$(MAKE) libz-ng.a
+
+END

@@ -9,8 +9,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <ngx_http_spdy_module.h>
-
-#include <zlib.h>
+#include <ngx_zlib.h>
 
 
 #if (NGX_HAVE_LITTLE_ENDIAN && NGX_HAVE_NONALIGNED)
@@ -1172,7 +1171,7 @@ ngx_http_spdy_state_headers(ngx_http_spdy_connection_t *sc, u_char *pos,
     }
 
     sc->length -= sc->zstream_in.next_in - pos;
-    pos = sc->zstream_in.next_in;
+    pos = (u_char *) sc->zstream_in.next_in;
 
     buf->last = sc->zstream_in.next_out;
 
@@ -1263,7 +1262,7 @@ ngx_http_spdy_state_headers(ngx_http_spdy_connection_t *sc, u_char *pos,
                 }
 
                 sc->length -= sc->zstream_in.next_in - pos;
-                pos = sc->zstream_in.next_in;
+                pos = (u_char *) sc->zstream_in.next_in;
 
                 buf->last = sc->zstream_in.next_out;
 
@@ -1370,7 +1369,7 @@ ngx_http_spdy_state_headers_skip(ngx_http_spdy_connection_t *sc, u_char *pos,
         }
     }
 
-    pos = sc->zstream_in.next_in;
+    pos = (u_char *) sc->zstream_in.next_in;
 
     if (size < sc->length) {
         sc->length -= size;
