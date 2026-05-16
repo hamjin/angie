@@ -10,7 +10,7 @@
 #include <ngx_http.h>
 
 #if (NGX_ZLIB)
-#include <zlib.h>
+#include <ngx_zlib.h>
 #endif
 
 

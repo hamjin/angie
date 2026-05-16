@@ -1,0 +1,93 @@
+# Copyright (C) 2024 Web Server LLC
+# Copyright (C) Igor Sysoev
+# Copyright (C) Nginx, Inc.
+
+
+if [ "$NGX_SYSTEM" != "Linux" -o "$NGX_PLATFORM" = win32 ]; then
+cat << END
+
+$0: error: native zlib-ng support is currently available on Linux only.
+
+END
+    exit 1
+fi
+
+
+if [ $ZLIB_NG != NONE ]; then
+
+    have=NGX_ZLIB . auto/have
+    have=NGX_ZLIB_NG . auto/have
+
+    ngx_zlib_ng_cflags=`pkg-config --cflags zlib-ng 2>/dev/null`
+    ngx_zlib_ng_libs=`pkg-config --libs zlib-ng 2>/dev/null`
+
+    if [ -z "$ngx_zlib_ng_cflags" -o -z "$ngx_zlib_ng_libs" ]; then
+        ngx_zlib_ng_cflags="-DWITH_GZFILEOP"
+        ngx_zlib_ng_libs="-lz-ng"
+    fi
+
+    case " $ngx_zlib_ng_cflags " in
+        *" -DWITH_GZFILEOP "*) ;;
+        *) ngx_zlib_ng_cflags="$ngx_zlib_ng_cflags -DWITH_GZFILEOP" ;;
+    esac
+
+    case " $NGX_CC_OPT " in
+        *" -DWITH_GZFILEOP "*) ;;
+        *) NGX_CC_OPT="$NGX_CC_OPT -DWITH_GZFILEOP" ;;
+    esac
+
+    CORE_INCS="$CORE_INCS $ZLIB_NG"
+    CORE_DEPS="$CORE_DEPS $ZLIB_NG/zlib-ng.h $ZLIB_NG/zconf-ng.h"
+    LINK_DEPS="$LINK_DEPS $ZLIB_NG/libz-ng.a"
+    CORE_LIBS="$CORE_LIBS $ZLIB_NG/libz-ng.a"
+else
+
+    ZLIB_NG=NO
+
+    ngx_zlib_ng_pkg_cflags=`pkg-config --cflags zlib-ng 2>/dev/null`
+    ngx_zlib_ng_pkg_libs=`pkg-config --libs zlib-ng 2>/dev/null`
+
+    ngx_feature="native zlib-ng library"
+    ngx_feature_name="NGX_ZLIB_NG"
+    ngx_feature_run=no
+    ngx_feature_incs="#include <zlib-ng.h>"
+    ngx_feature_path=
+    ngx_feature_libs="-lz-ng"
+    ngx_feature_test="zng_stream z; zng_deflate(&z, Z_NO_FLUSH)"
+    . auto/feature
+
+
+    if [ $ngx_found = no -a -n "$ngx_zlib_ng_pkg_libs" ]; then
+        ngx_feature="native zlib-ng library via pkg-config"
+        ngx_feature_path=`echo "$ngx_zlib_ng_pkg_cflags" \
+                          | sed -n -e 's/.*-I *\([^ ][^ ]*\).*/\1/p'`
+        ngx_feature_libs="$ngx_zlib_ng_pkg_libs"
+        . auto/feature
+    fi
+
+
+    if [ $ngx_found = yes ]; then
+        have=NGX_ZLIB . auto/have
+        CORE_INCS="$CORE_INCS $ngx_feature_path"
+        CORE_LIBS="$CORE_LIBS $ngx_feature_libs"
+        case " $NGX_CC_OPT " in
+            *" -DWITH_GZFILEOP "*) ;;
+            *) NGX_CC_OPT="$NGX_CC_OPT -DWITH_GZFILEOP" ;;
+        esac
+        ZLIB_NG=YES
+    fi
+
+
+    if [ $ZLIB_NG != YES ]; then
+cat << END
+
+$0: error: the native zlib-ng library was not found.
+You can either disable the zlib-ng selection, install native zlib-ng into
+the system, or build native zlib-ng statically from the source with Angie
+by using --with-zlib-ng=<path> option.
+
+END
+        exit 1
+    fi
+
+fi

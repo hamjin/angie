@@ -11,7 +11,7 @@
 #include <nginx.h>
 #include <ngx_http_spdy_module.h>
 
-#include <zlib.h>
+#include <ngx_zlib.h>
 
 
 #define ngx_http_spdy_nv_nsize(h)  (NGX_SPDY_NV_NLEN_SIZE + sizeof(h) - 1)

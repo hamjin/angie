@@ -26,7 +26,11 @@ if [ $USE_OPENSSL = YES ]; then
 fi
 
 if [ $USE_ZLIB = YES ]; then
-    . auto/lib/zlib/conf
+    if [ $USE_ZLIB_NG = YES ]; then
+        . auto/lib/zlib-ng/conf
+    else
+        . auto/lib/zlib/conf
+    fi
 fi
 
 if [ $USE_LIBXSLT != NO ]; then

@@ -17,7 +17,7 @@
 #if (NGX_ZLIB && defined TLSEXT_cert_compression_zlib                         \
      && !defined(BABASSL_VERSION_NUMBER))
 #define NGX_HAVE_CERT_ZLIB_COMPRESSION  1
-#include <zlib.h>
+#include <ngx_zlib.h>
 #endif
 
 #if (NGX_API && NGX_HTTP_ACME)
