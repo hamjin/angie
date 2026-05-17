@@ -50,6 +50,7 @@ typedef struct {
 #endif
     ngx_array_t                   *headers_source;
     ngx_uint_t                     host_set;
+    ngx_http_complex_value_t      *host_value;
 
     ngx_array_t                   *proxy_lengths;
     ngx_array_t                   *proxy_values;
@@ -121,6 +122,9 @@ typedef struct {
 
 ngx_int_t ngx_http_proxy_eval(ngx_http_request_t *r, ngx_http_proxy_ctx_t *ctx,
     ngx_http_proxy_loc_conf_t *plcf);
+ngx_int_t ngx_http_proxy_get_authority(ngx_http_request_t *r,
+    ngx_http_proxy_loc_conf_t *plcf, ngx_http_proxy_ctx_t *ctx,
+    ngx_str_t *authority);
 #if (NGX_HTTP_CACHE)
 ngx_int_t ngx_http_proxy_create_key(ngx_http_request_t *r);
 #endif

@@ -326,7 +326,7 @@ ngx_http_proxy_v2_create_request(ngx_http_request_t *r)
                                   loc_len, body_len;
     uintptr_t                     escape;
     ngx_buf_t                    *b;
-    ngx_str_t                     method, *host;
+    ngx_str_t                     method, authority;
     ngx_uint_t                    i, next, unparsed_uri;
     ngx_chain_t                  *cl, *body;
     ngx_list_part_t              *part;
@@ -443,19 +443,21 @@ ngx_http_proxy_v2_create_request(ngx_http_request_t *r)
 
     /* :authority header */
 
-    host = &ctx->ctx.vars.host_header;
+    if (ngx_http_proxy_get_authority(r, plcf, &ctx->ctx, &authority) != NGX_OK) {
+        return NGX_ERROR;
+    }
 
-    if (!plcf->host_set) {
-        if (host->len > NGX_HTTP_V2_MAX_FIELD) {
+    if (authority.len) {
+        if (authority.len > NGX_HTTP_V2_MAX_FIELD) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                          "too long http2 host: \"%V\"", host);
+                          "too long http2 host: \"%V\"", &authority);
             return NGX_ERROR;
         }
 
-        len += 1 + NGX_HTTP_V2_INT_OCTETS + host->len;
+        len += 1 + NGX_HTTP_V2_INT_OCTETS + authority.len;
 
-        if (tmp_len < host->len) {
-            tmp_len = host->len;
+        if (tmp_len < authority.len) {
+            tmp_len = authority.len;
         }
     }
 
@@ -717,12 +719,13 @@ ngx_http_proxy_v2_create_request(ngx_http_request_t *r)
                        val_tmp);
     }
 
-    if (!plcf->host_set) {
+    if (authority.len) {
         *b->last++ = ngx_http_v2_inc_indexed(NGX_HTTP_V2_AUTHORITY_INDEX);
-        b->last = ngx_http_v2_write_value(b->last, host->data, host->len, tmp);
+        b->last = ngx_http_v2_write_value(b->last, authority.data,
+                                          authority.len, tmp);
 
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "http proxy header: \":authority: %V\"", host);
+                       "http proxy header: \":authority: %V\"", &authority);
     }
 
     ngx_memzero(&e, sizeof(ngx_http_script_engine_t));
