@@ -177,6 +177,9 @@ typedef struct {
     /* encode method state */
     ngx_str_t                      method;
 
+    /* encode authority state */
+    ngx_str_t                      authority;
+
     /* encode path state */
     size_t                         loc_len;
     size_t                         uri_len;
@@ -1373,6 +1376,28 @@ ngx_http_proxy_eval(ngx_http_request_t *r, ngx_http_proxy_ctx_t *ctx,
         ngx_str_set(&ctx->host, "localhost");
     }
 #endif
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_http_proxy_get_authority(ngx_http_request_t *r,
+    ngx_http_proxy_loc_conf_t *plcf, ngx_http_proxy_ctx_t *ctx,
+    ngx_str_t *authority)
+{
+    if (plcf->host_value) {
+        return ngx_http_complex_value(r, plcf->host_value, authority);
+    }
+
+#if (NGX_HTTP_V3)
+    if (plcf->http_version == NGX_HTTP_VERSION_30) {
+        *authority = ctx->host;
+        return NGX_OK;
+    }
+#endif
+
+    *authority = ctx->vars.host_header;
 
     return NGX_OK;
 }
@@ -3837,6 +3862,7 @@ ngx_http_proxy_create_loc_conf(ngx_conf_t *cf)
      *     conf->headers.hash = { NULL, 0 };
      *     conf->headers_cache.lengths = NULL;
      *     conf->host_set = 0;
+     *     conf->host_value = NULL;
      *     conf->headers_cache.values = NULL;
      *     conf->headers_cache.hash = { NULL, 0 };
      *     conf->body_lengths = NULL;
@@ -4575,6 +4601,7 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->headers_cache = prev->headers_cache;
 #endif
         conf->host_set = prev->host_set;
+        conf->host_value = prev->host_value;
     }
 
     proxy_headers = ngx_http_proxy_headers;
@@ -4625,6 +4652,7 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         prev->headers_cache = conf->headers_cache;
 #endif
         prev->host_set = conf->host_set;
+        prev->host_value = conf->host_value;
     }
 
     return NGX_CONF_OK;
@@ -4683,6 +4711,7 @@ ngx_http_proxy_init_headers(ngx_conf_t *cf, ngx_http_proxy_loc_conf_t *conf,
     ngx_hash_key_t               *hk;
     ngx_hash_init_t               hash;
     ngx_http_script_compile_t     sc;
+    ngx_http_compile_complex_value_t  ccv;
     ngx_http_script_copy_code_t  *copy;
 
     if (headers->hash.buckets) {
@@ -4720,6 +4749,21 @@ ngx_http_proxy_init_headers(ngx_conf_t *cf, ngx_http_proxy_loc_conf_t *conf,
                 && ngx_strncasecmp(src[i].key.data, (u_char *) "Host", 4) == 0)
             {
                 conf->host_set = 1;
+                conf->host_value = ngx_palloc(cf->pool,
+                                              sizeof(ngx_http_complex_value_t));
+                if (conf->host_value == NULL) {
+                    return NGX_ERROR;
+                }
+
+                ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+
+                ccv.cf = cf;
+                ccv.value = &src[i].value;
+                ccv.complex_value = conf->host_value;
+
+                if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+                    return NGX_ERROR;
+                }
             }
 
             s = ngx_array_push(&headers_merged);
@@ -6597,31 +6641,43 @@ ngx_http_v3_proxy_encode_authority(ngx_http_request_t *r,
     ngx_http_v3_proxy_ctx_t *v3c, ngx_buf_t *b)
 {
     size_t                      n;
+    ngx_str_t                   authority;
     ngx_http_proxy_ctx_t       *ctx;
     ngx_http_proxy_loc_conf_t  *plcf;
 
     plcf = ngx_http_get_module_loc_conf(r, ngx_http_proxy_module);
-
-    if (plcf->host_set) {
-        return NGX_OK;
-    }
-
     ctx = ngx_http_get_module_ctx(r, ngx_http_proxy_module);
 
     if (b == NULL) {
 
+        if (ngx_http_proxy_get_authority(r, plcf, ctx, &authority) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        v3c->authority = authority;
+
+        if (authority.len == 0) {
+            return NGX_OK;
+        }
+
         n = ngx_http_v3_encode_field_lri(NULL, 0, NGX_HTTP_V3_HEADER_AUTHORITY,
-                                         NULL, ctx->host.len);
+                                         NULL, authority.len);
         v3c->n += n;
 
         return NGX_OK;
     }
 
+    authority = v3c->authority;
+
+    if (authority.len == 0) {
+        return NGX_OK;
+    }
+
     b->last = (u_char *) ngx_http_v3_encode_field_lri(b->last, 0,
-                  NGX_HTTP_V3_HEADER_AUTHORITY, ctx->host.data, ctx->host.len);
+                  NGX_HTTP_V3_HEADER_AUTHORITY, authority.data, authority.len);
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "http3 header: \":authority: %V\"", &ctx->host);
+                   "http3 header: \":authority: %V\"", &authority);
 
     return NGX_OK;
 }
