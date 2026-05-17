@@ -54,6 +54,31 @@ fmt_objs()
 }
 
 
+make_short_target()
+{
+    case "$1" in
+        $NGX_OBJS/*)
+            res="${1#"$NGX_OBJS/"}"
+        ;;
+
+        *)
+            res="$1"
+        ;;
+    esac
+}
+
+
+make_step_echo()
+{
+    if [ "$NGX_PLATFORM" = win32 ]; then
+        res=
+        return
+    fi
+
+    res="@case '\$(V)' in 1) set -x ;; *) printf '  %-7s %s\\n' '$1' '$2' ;; esac; "
+}
+
+
 src2obj()
 {
     res=
@@ -310,6 +335,13 @@ else
     ngx_cc="\$(CC) $ngx_compile_opt \$(CFLAGS) \$(CORE_INCS)"
 fi
 
+make_short_target "$core_build_obj"
+make_step_echo CC "$res"
+ngx_cc_echo=$res
+
+make_step_echo LD "$NGX_OBJS${ngx_dirsep}angie$ngx_binext"
+ngx_ld_echo=$res
+
 
 cat << END                                                    >> $NGX_MAKEFILE
 
@@ -318,8 +350,8 @@ build:	binary modules manpage
 binary:	$NGX_OBJS${ngx_dirsep}angie$ngx_binext
 
 $NGX_OBJS${ngx_dirsep}angie$ngx_binext:	$core_build_c$ngx_cont$ngx_deps$ngx_spacer
-	$ngx_cc -DANGIE_BUILD_TIMESTAMP=\`date +%s\`$ngx_tab$ngx_objout$core_build_obj$ngx_tab$core_build_c$NGX_AUX
-	\$(LINK) $ngx_long_start$ngx_binout$NGX_OBJS${ngx_dirsep}angie$ngx_binext$ngx_long_cont$core_build_obj$ngx_long_cont$ngx_objs$ngx_libs$ngx_link$ngx_main_link
+	$ngx_cc_echo$ngx_cc -DANGIE_BUILD_TIMESTAMP=\`date +%s\`$ngx_tab$ngx_objout$core_build_obj$ngx_tab$core_build_c$NGX_AUX
+	$ngx_ld_echo\$(LINK) $ngx_long_start$ngx_binout$NGX_OBJS${ngx_dirsep}angie$ngx_binext$ngx_long_cont$core_build_obj$ngx_long_cont$ngx_objs$ngx_libs$ngx_link$ngx_main_link
 	$ngx_rcc
 $ngx_long_end
 
@@ -329,10 +361,14 @@ END
 
 # ngx_modules.c
 
+make_short_target "$ngx_modules_obj"
+make_step_echo CC "$res"
+ngx_cc_echo=$res
+
 cat << END                                                    >> $NGX_MAKEFILE
 
 $ngx_modules_obj:	\$(CORE_DEPS)$ngx_cont$ngx_modules_c
-	$ngx_cc$ngx_tab$ngx_objout$ngx_modules_obj$ngx_tab$ngx_modules_c$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_modules_obj$ngx_tab$ngx_modules_c$NGX_AUX
 
 END
 
@@ -343,11 +379,14 @@ for ngx_src in $CORE_SRCS
 do
     dirsep $ngx_src; ngx_src=$res
     src2obj $ngx_src; ngx_obj=$res
+    make_short_target "$ngx_obj"
+    make_step_echo CC "$res"
+    ngx_cc_echo=$res
 
     cat << END                                                >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
 
@@ -370,13 +409,16 @@ if [ $HTTP = YES ]; then
     do
         dirsep $ngx_source; ngx_src=$res
         src2obj $ngx_src; ngx_obj=$res
+        make_short_target "$ngx_obj"
+        make_step_echo CC "$res"
+        ngx_cc_echo=$res
 
         if [ $ngx_source = src/http/modules/perl/ngx_http_perl_module.c ]; then
 
             cat << END                                        >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS) \$(HTTP_DEPS)$ngx_cont$ngx_src
-	$ngx_perl_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_perl_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
         else
@@ -384,7 +426,7 @@ END
             cat << END                                        >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS) \$(HTTP_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
 
@@ -408,11 +450,14 @@ if [ $MAIL = YES ]; then
     do
         dirsep $ngx_src; ngx_src=$res
         src2obj $ngx_src; ngx_obj=$res
+        make_short_target "$ngx_obj"
+        make_step_echo CC "$res"
+        ngx_cc_echo=$res
 
         cat << END                                            >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS) \$(MAIL_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
     done
@@ -434,11 +479,14 @@ if [ $STREAM = YES ]; then
     do
         dirsep $ngx_src; ngx_src=$res
         src2obj $ngx_src; ngx_obj=$res
+        make_short_target "$ngx_obj"
+        make_step_echo CC "$res"
+        ngx_cc_echo=$res
 
         cat << END                                            >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS) \$(STREAM_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
     done
@@ -456,11 +504,14 @@ if test -n "$MISC_SRCS"; then
     do
         dirsep $ngx_src; ngx_src=$res
         src2obj $ngx_src; ngx_obj=$res
+        make_short_target "$ngx_obj"
+        make_step_echo CC "$res"
+        ngx_cc_echo=$res
 
         cat << END                                            >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(CORE_DEPS) $ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
     done
@@ -481,11 +532,14 @@ if test -n "$NGX_ADDON_SRCS"; then
         dirsep $ngx_obj/`basename $ngx_src`; ngx_obj=$res
         src2obj $ngx_obj; ngx_obj=$res
         dirsep $ngx_src; ngx_src=$res
+        make_short_target "$ngx_obj"
+        make_step_echo CC "$res"
+        ngx_cc_echo=$res
 
         cat << END                                            >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(ADDON_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
     done
@@ -512,11 +566,13 @@ if test -n "$NGX_RES"; then
 
     dirsep "$NGX_RES:	$NGX_RC $NGX_ICONS"; ngx_res=$res
     dirsep $NGX_RCC; ngx_rcc=$res
+    make_step_echo RC "$NGX_RES"
+    ngx_rc_echo=$res
 
     cat << END                                                >> $NGX_MAKEFILE
 
 $ngx_res
-	$ngx_rcc
+	$ngx_rc_echo$ngx_rcc
 
 END
 
@@ -535,11 +591,14 @@ if test -n "$NGX_PCH"; then
     ngx_src="\$(CC) \$(CFLAGS) $NGX_BUILD_PCH $ngx_compile_opt \$(ALL_INCS)"
     ngx_src="$ngx_src $ngx_objout$NGX_OBJS/ngx_pch.obj $NGX_OBJS/ngx_pch.c"
     dirsep $ngx_src; ngx_src=$res
+    make_short_target "$NGX_PCH"
+    make_step_echo PCH "$res"
+    ngx_pch_echo=$res
 
     cat << END                                                >> $NGX_MAKEFILE
 
 $ngx_pch
-	$ngx_src
+	$ngx_pch_echo$ngx_src
 
 END
 
@@ -667,17 +726,24 @@ END
     fmt_link $MODULE_LINK
     ngx_module_link=${MODULE_LINK:+$res}
 
+    make_step_echo "LD[M]" "$ngx_obj"
+    ngx_ld_echo=$res
+
+    make_short_target "$ngx_modules_obj"
+    make_step_echo "CC[M]" "$res"
+    ngx_cc_echo=$res
+
 
     cat << END                                            >> $NGX_MAKEFILE
 
 modules:	$ngx_obj
 
 $ngx_obj:	$ngx_deps$ngx_spacer
-	\$(LINK) $ngx_long_start$ngx_binout$ngx_obj$ngx_long_cont$ngx_objs$ngx_libs$ngx_link$ngx_module_link
+	$ngx_ld_echo\$(LINK) $ngx_long_start$ngx_binout$ngx_obj$ngx_long_cont$ngx_objs$ngx_libs$ngx_link$ngx_module_link
 $ngx_long_end
 
 $ngx_modules_obj:	\$(CORE_DEPS)$ngx_cont$ngx_modules_c
-	$ngx_cc$ngx_tab$ngx_objout$ngx_modules_obj$ngx_tab$ngx_modules_c$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_modules_obj$ngx_tab$ngx_modules_c$NGX_AUX
 
 END
 
@@ -695,13 +761,16 @@ END
 
         src2obj $ngx_obj; ngx_obj=$res
         dirsep $ngx_source; ngx_src=$res
+        make_short_target "$ngx_obj"
+        make_step_echo "CC[M]" "$res"
+        ngx_cc_echo=$res
 
         if [ $ngx_source = src/http/modules/perl/ngx_http_perl_module.c ]; then
 
             cat << END                                        >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(ADDON_DEPS)$ngx_cont$ngx_src
-	$ngx_perl_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_perl_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
         else
@@ -709,7 +778,7 @@ END
             cat << END                                        >> $NGX_MAKEFILE
 
 $ngx_obj:	\$(ADDON_DEPS)$ngx_cont$ngx_src
-	$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
+	$ngx_cc_echo$ngx_cc$ngx_tab$ngx_objout$ngx_obj$ngx_tab$ngx_src$NGX_AUX
 
 END
 
