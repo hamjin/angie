@@ -14,22 +14,79 @@ if [ $OPENSSL != NONE ]; then
         have=NGX_QUIC . auto/have
     fi
 
+    ngx_openssl_out_of_tree=NO
+
+    case "$OPENSSL" in
+        /*) ngx_openssl_src="$OPENSSL" ;;
+        *)  ngx_openssl_src="$PWD/$OPENSSL" ;;
+    esac
+
+    ngx_openssl_build="$NGX_OBJS/openssl"
+    ngx_openssl_install="$ngx_openssl_build/.openssl"
+
+    case "$ngx_openssl_install" in
+        /*) ngx_openssl_prefix="$ngx_openssl_install" ;;
+        *)  ngx_openssl_prefix="$PWD/$ngx_openssl_install" ;;
+    esac
+
+    if [ -f "$OPENSSL/VERSION.dat" ]; then
+        ngx_openssl_major=`sed -n \
+            's/^MAJOR=\([0-9][0-9]*\).*$/\1/p' "$OPENSSL/VERSION.dat"`
+        ngx_openssl_minor=`sed -n \
+            's/^MINOR=\([0-9][0-9]*\).*$/\1/p' "$OPENSSL/VERSION.dat"`
+
+        if [ -n "$ngx_openssl_major" ] && [ -n "$ngx_openssl_minor" ]; then
+            if [ "$ngx_openssl_major" -gt 1 ] \
+               || { [ "$ngx_openssl_major" -eq 1 ] \
+                    && [ "$ngx_openssl_minor" -ge 1 ]; }
+            then
+                ngx_openssl_out_of_tree=YES
+            fi
+        fi
+
+    elif [ -f "$OPENSSL/include/openssl/opensslv.h" ]; then
+        ngx_openssl_version=`sed -n \
+            's/^#[ 	]*define[ 	][ 	]*OPENSSL_VERSION_NUMBER[ 	][ 	]*0x\([0-9A-Fa-f][0-9A-Fa-f]*\).*$/\1/p' \
+            "$OPENSSL/include/openssl/opensslv.h" | sed 1q`
+
+        if [ -n "$ngx_openssl_version" ]; then
+            if echo "$ngx_openssl_version" \
+                | awk '{
+                    v = toupper($0);
+                    while (length(v) < 8) {
+                        v = "0" v;
+                    }
+                    exit (v >= "10100000" ? 0 : 1);
+                }'
+            then
+                ngx_openssl_out_of_tree=YES
+            fi
+        fi
+    fi
+
     case "$CC" in
 
         cl | bcc32)
             CFLAGS="$CFLAGS -DNO_SYS_TYPES_H"
 
-            CORE_INCS="$CORE_INCS $OPENSSL/openssl/include"
-            CORE_DEPS="$CORE_DEPS $OPENSSL/openssl/include/openssl/ssl.h"
-
-            if [ -f $OPENSSL/ms/do_ms.bat ]; then
-                # before OpenSSL 1.1.0
-                CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/ssleay32.lib"
-                CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libeay32.lib"
+            if [ $ngx_openssl_out_of_tree = YES ]; then
+                CORE_INCS="$CORE_INCS $ngx_openssl_install/include"
+                CORE_DEPS="$CORE_DEPS $ngx_openssl_install/include/openssl/ssl.h"
+                CORE_LIBS="$CORE_LIBS $ngx_openssl_install/lib/libssl.lib"
+                CORE_LIBS="$CORE_LIBS $ngx_openssl_install/lib/libcrypto.lib"
             else
-                # OpenSSL 1.1.0+
-                CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libssl.lib"
-                CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libcrypto.lib"
+                CORE_INCS="$CORE_INCS $OPENSSL/openssl/include"
+                CORE_DEPS="$CORE_DEPS $OPENSSL/openssl/include/openssl/ssl.h"
+
+                if [ -f $OPENSSL/ms/do_ms.bat ]; then
+                    # before OpenSSL 1.1.0
+                    CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/ssleay32.lib"
+                    CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libeay32.lib"
+                else
+                    # OpenSSL 1.1.0+
+                    CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libssl.lib"
+                    CORE_LIBS="$CORE_LIBS $OPENSSL/openssl/lib/libcrypto.lib"
+                fi
             fi
 
             # libeay32.lib requires gdi32.lib
@@ -39,10 +96,18 @@ if [ $OPENSSL != NONE ]; then
         ;;
 
         *)
-            CORE_INCS="$CORE_INCS $OPENSSL/.openssl/include"
-            CORE_DEPS="$CORE_DEPS $OPENSSL/.openssl/include/openssl/ssl.h"
-            CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libssl.a"
-            CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libcrypto.a"
+            if [ $ngx_openssl_out_of_tree = YES ]; then
+                CORE_INCS="$CORE_INCS $ngx_openssl_install/include"
+                CORE_DEPS="$CORE_DEPS $ngx_openssl_install/include/openssl/ssl.h"
+                CORE_LIBS="$CORE_LIBS $ngx_openssl_install/lib/libssl.a"
+                CORE_LIBS="$CORE_LIBS $ngx_openssl_install/lib/libcrypto.a"
+            else
+                CORE_INCS="$CORE_INCS $OPENSSL/.openssl/include"
+                CORE_DEPS="$CORE_DEPS $OPENSSL/.openssl/include/openssl/ssl.h"
+                CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libssl.a"
+                CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libcrypto.a"
+            fi
+
             CORE_LIBS="$CORE_LIBS $NGX_LIBDL"
             CORE_LIBS="$CORE_LIBS $NGX_LIBPTHREAD"
 

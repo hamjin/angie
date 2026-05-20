@@ -55,12 +55,37 @@ case "$CC" in
 
         esac
 
+        case $ngx_openssl_out_of_tree in
+            YES)
+                ngx_openssl_target="$ngx_openssl_install/include/openssl/ssl.h"
+            ;;
+
+            *)
+                ngx_openssl_target="$OPENSSL/openssl/include/openssl/ssl.h"
+            ;;
+        esac
+
+        ngx_openssl_make_src=$ngx_openssl_src
+        ngx_openssl_make_build=$ngx_openssl_build
+
+        if [ "$ngx_dirsep" != "/" ]; then
+            ngx_openssl_target=`echo "$ngx_openssl_target" \
+                | sed -e "s/\//$ngx_regex_dirsep/g"`
+            ngx_openssl_make_src=`echo "$ngx_openssl_make_src" \
+                | sed -e "s/\//$ngx_regex_dirsep/g"`
+            ngx_openssl_make_build=`echo "$ngx_openssl_make_build" \
+                | sed -e "s/\//$ngx_regex_dirsep/g"`
+        fi
+
         cat << END                                            >> $NGX_MAKEFILE
 
-$OPENSSL/openssl/include/openssl/ssl.h:	$NGX_MAKEFILE
+$ngx_openssl_target:	$NGX_MAKEFILE
 	\$(MAKE) -f auto/lib/openssl/makefile.msvc			\
 		OPENSSL="$OPENSSL" OPENSSL_OPT="$OPENSSL_OPT"		\
-		OPENSSL_TARGET="$OPENSSL_TARGET"
+		OPENSSL_TARGET="$OPENSSL_TARGET"			\
+		OPENSSL_SRC="$ngx_openssl_make_src"		\
+		OPENSSL_BUILD="$ngx_openssl_make_build"		\
+		OPENSSL_OUT_OF_TREE="$ngx_openssl_out_of_tree"
 
 END
 
@@ -68,20 +93,37 @@ END
 
     bcc32)
 
-        ngx_opt=`echo "-DOPENSSL=\"$OPENSSL\" -DOPENSSL_OPT=\"$OPENSSL_OPT\"" \
+        case $ngx_openssl_out_of_tree in
+            YES)
+                ngx_openssl_target="$ngx_openssl_install/include/openssl/ssl.h"
+                ngx_openssl_libssl="$ngx_openssl_install/lib/libssl.lib"
+                ngx_openssl_libcrypto="$ngx_openssl_install/lib/libcrypto.lib"
+            ;;
+
+            *)
+                ngx_openssl_target="$OPENSSL/openssl/include/openssl/ssl.h"
+                ngx_openssl_libssl="$OPENSSL/openssl/lib/ssleay32.lib"
+                ngx_openssl_libcrypto="$OPENSSL/openssl/lib/libeay32.lib"
+            ;;
+        esac
+
+        ngx_opt=`echo "-DOPENSSL=\"$OPENSSL\" -DOPENSSL_OPT=\"$OPENSSL_OPT\" \
+            -DOPENSSL_SRC=\"$ngx_openssl_src\" \
+            -DOPENSSL_BUILD=\"$ngx_openssl_build\" \
+            -DOPENSSL_OUT_OF_TREE=\"$ngx_openssl_out_of_tree\"" \
             | sed -e "s/\//$ngx_regex_dirsep/g"`
 
         cat << END                                            >> $NGX_MAKEFILE
 
-`echo "$OPENSSL\\openssl\\lib\\libeay32.lib:				\
-	$OPENSSL\\openssl\\include\\openssl\\ssl.h"			\
+`echo "$ngx_openssl_libcrypto:					\
+	$ngx_openssl_target"						\
 	| sed -e "s/\//$ngx_regex_dirsep/g"`
 
-`echo "$OPENSSL\\openssl\\lib\\ssleay32.lib:				\
-	$OPENSSL\\openssl\\include\\openssl\\ssl.h"			\
+`echo "$ngx_openssl_libssl:					\
+	$ngx_openssl_target"						\
 	| sed -e "s/\//$ngx_regex_dirsep/g"`
 
-`echo "$OPENSSL\\openssl\\include\\openssl\\ssl.h:	$NGX_MAKEFILE"	\
+`echo "$ngx_openssl_target:	$NGX_MAKEFILE"			\
 	| sed -e "s/\//$ngx_regex_dirsep/g"`
 	\$(MAKE) -f auto/lib/openssl/makefile.bcc $ngx_opt
 
@@ -90,12 +132,31 @@ END
     ;;
 
     *)
-        case $OPENSSL in
-            /*) ngx_prefix="$OPENSSL/.openssl" ;;
-            *)  ngx_prefix="$PWD/$OPENSSL/.openssl" ;;
-        esac
+        case $ngx_openssl_out_of_tree in
+            YES)
 
-        cat << END                                            >> $NGX_MAKEFILE
+                cat << END                                    >> $NGX_MAKEFILE
+
+$ngx_openssl_install/include/openssl/ssl.h:	$NGX_MAKEFILE
+	rm -rf $ngx_openssl_build
+	mkdir -p $ngx_openssl_build
+	cd $ngx_openssl_build \\
+	&& $ngx_openssl_src/config --prefix=$ngx_openssl_prefix \\
+		--libdir=lib no-shared no-threads $OPENSSL_OPT \\
+	&& \$(MAKE) \\
+	&& \$(MAKE) install_sw LIBDIR=lib
+
+END
+
+            ;;
+
+            *)
+                case $OPENSSL in
+                    /*) ngx_prefix="$OPENSSL/.openssl" ;;
+                    *)  ngx_prefix="$PWD/$OPENSSL/.openssl" ;;
+                esac
+
+                cat << END                                    >> $NGX_MAKEFILE
 
 $OPENSSL/.openssl/include/openssl/ssl.h:	$NGX_MAKEFILE
 	cd $OPENSSL \\
@@ -105,6 +166,9 @@ $OPENSSL/.openssl/include/openssl/ssl.h:	$NGX_MAKEFILE
 	&& \$(MAKE) install_sw LIBDIR=lib
 
 END
+
+            ;;
+        esac
 
     ;;
 
