@@ -4,6 +4,22 @@
 
 
 all:
+!if "$(OPENSSL_OUT_OF_TREE)" == "YES"
+
+	if not exist $(OPENSSL_BUILD) mkdir $(OPENSSL_BUILD)
+	cd $(OPENSSL_BUILD)
+
+	perl "$(OPENSSL_SRC)\Configure" $(OPENSSL_TARGET) no-shared no-threads	\
+		--prefix="%cd%\.openssl"				\
+		--openssldir="%cd%\.openssl\ssl"			\
+		--libdir=lib						\
+		$(OPENSSL_OPT)
+
+	$(MAKE)
+	$(MAKE) install_sw
+
+!else
+
 	cd $(OPENSSL)
 
 	perl Configure $(OPENSSL_TARGET) no-shared no-threads		\
@@ -19,3 +35,5 @@ all:
 		$(MAKE)							\
 		&& $(MAKE) install_sw					\
 	)
+
+!endif
