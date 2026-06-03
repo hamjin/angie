@@ -9,6 +9,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_event_quic_cc.h>
 
 
 static ngx_int_t ngx_http_v3_variable(ngx_http_request_t *r,
@@ -25,6 +26,13 @@ static char *ngx_http_quic_host_key(ngx_conf_t *cf, ngx_command_t *cmd,
 static ngx_int_t ngx_http_v3_calculate_ssl_statistic(ngx_connection_t *c,
     ngx_uint_t initialized);
 #endif
+
+
+static ngx_conf_enum_t  ngx_http_v3_quic_cc[] = {
+    { ngx_string("reno"), NGX_QUIC_CC_RENO },
+    { ngx_string("cubic"), NGX_QUIC_CC_CUBIC },
+    { ngx_null_string, 0 }
+};
 
 
 static ngx_command_t  ngx_http_v3_commands[] = {
@@ -90,6 +98,20 @@ static ngx_command_t  ngx_http_v3_commands[] = {
       ngx_conf_set_num_slot,
       NGX_HTTP_SRV_CONF_OFFSET,
       offsetof(ngx_http_v3_srv_conf_t, quic.active_connection_id_limit),
+      NULL },
+
+    { ngx_string("quic_congestion_control"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_v3_srv_conf_t, quic.cc_algorithm),
+      &ngx_http_v3_quic_cc },
+
+    { ngx_string("quic_cc_conf"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE2,
+      ngx_quic_cc_conf,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      0,
       NULL },
 
       ngx_null_command
@@ -260,6 +282,8 @@ ngx_http_v3_create_srv_conf(ngx_conf_t *cf)
     h3scf->quic.stream_close_code = NGX_HTTP_V3_ERR_NO_ERROR;
     h3scf->quic.stream_reject_code_bidi = NGX_HTTP_V3_ERR_REQUEST_REJECTED;
     h3scf->quic.active_connection_id_limit = NGX_CONF_UNSET_UINT;
+    h3scf->quic.cc_algorithm = NGX_CONF_UNSET_UINT;
+    h3scf->quic.cc_algo_conf = NULL;
 
     h3scf->quic.init = ngx_http_v3_init;
     h3scf->quic.shutdown = ngx_http_v3_shutdown;
@@ -308,6 +332,29 @@ ngx_http_v3_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_uint_value(conf->quic.active_connection_id_limit,
                               prev->quic.active_connection_id_limit,
                               2);
+
+    ngx_conf_merge_uint_value(conf->quic.cc_algorithm,
+                              prev->quic.cc_algorithm,
+                              NGX_QUIC_CC_CUBIC);
+
+    {
+        const ngx_quic_cc_algo_t  *algo;
+
+        algo = ngx_quic_cc_lookup(conf->quic.cc_algorithm);
+
+        if (conf->quic.cc_algo_conf == NULL && algo->conf_size > 0) {
+            conf->quic.cc_algo_conf = ngx_quic_cc_create_conf(algo, cf->pool);
+            if (conf->quic.cc_algo_conf == NULL) {
+                return NGX_CONF_ERROR;
+            }
+        }
+
+        if (conf->quic.cc_algo_conf != NULL) {
+            ngx_quic_cc_merge_conf(cf, algo,
+                                   conf->quic.cc_algo_conf,
+                                   prev->quic.cc_algo_conf);
+        }
+    }
 
     if (conf->quic.host_key.len == 0) {
 
@@ -449,6 +496,32 @@ failed:
     }
 
     return NGX_CONF_ERROR;
+}
+
+
+char *
+ngx_quic_cc_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    const ngx_quic_cc_algo_t  *algo;
+    ngx_http_v3_srv_conf_t    *h3scf;
+
+    h3scf = conf;
+    algo = ngx_quic_cc_lookup(h3scf->quic.cc_algorithm);
+
+    if (algo == NULL || algo->conf_handler == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "quic_cc_conf: algorithm has no conf handler");
+        return NGX_CONF_ERROR;
+    }
+
+    if (h3scf->quic.cc_algo_conf == NULL) {
+        h3scf->quic.cc_algo_conf = ngx_quic_cc_create_conf(algo, cf->pool);
+        if (h3scf->quic.cc_algo_conf == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    return algo->conf_handler(cf, cmd, h3scf->quic.cc_algo_conf);
 }
 
 

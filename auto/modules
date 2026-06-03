@@ -1552,6 +1552,9 @@ if [ $USE_OPENSSL_QUIC = YES ]; then
                      src/event/quic/ngx_event_quic_streams.h \
                      src/event/quic/ngx_event_quic_ssl.h \
                      src/event/quic/ngx_event_quic_tokens.h \
+                     src/event/quic/ngx_event_quic_cc.h \
+                     src/event/quic/congestion_control/ngx_event_quic_reno.h \
+                     src/event/quic/congestion_control/ngx_event_quic_cubic.h \
                      src/event/quic/ngx_event_quic_ack.h \
                      src/event/quic/ngx_event_quic_output.h \
                      src/event/quic/ngx_event_quic_socket.h \
@@ -1566,6 +1569,9 @@ if [ $USE_OPENSSL_QUIC = YES ]; then
                      src/event/quic/ngx_event_quic_streams.c \
                      src/event/quic/ngx_event_quic_ssl.c \
                      src/event/quic/ngx_event_quic_tokens.c \
+                     src/event/quic/ngx_event_quic_cc.c \
+                     src/event/quic/congestion_control/ngx_event_quic_reno.c \
+                     src/event/quic/congestion_control/ngx_event_quic_cubic.c \
                      src/event/quic/ngx_event_quic_ack.c \
                      src/event/quic/ngx_event_quic_output.c \
                      src/event/quic/ngx_event_quic_socket.c \

@@ -3992,6 +3992,7 @@ ngx_http_proxy_create_loc_conf(ngx_conf_t *cf)
     conf->upstream.quic.gso_enabled = NGX_CONF_UNSET;
 
     conf->upstream.quic.active_connection_id_limit = NGX_CONF_UNSET_UINT;
+    conf->upstream.quic.cc_algorithm = NGX_CONF_UNSET_UINT;
 
     conf->upstream.quic.stream_close_code = NGX_HTTP_V3_ERR_NO_ERROR;
     conf->upstream.quic.stream_reject_code_bidi =
@@ -4519,6 +4520,10 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_uint_value(conf->upstream.quic.active_connection_id_limit,
                               prev->upstream.quic.active_connection_id_limit,
                               2);
+
+    ngx_conf_merge_uint_value(conf->upstream.quic.cc_algorithm,
+                              prev->upstream.quic.cc_algorithm,
+                              NGX_QUIC_CC_CUBIC);
 
     conf->upstream.quic.idle_timeout = conf->upstream.read_timeout;
     conf->upstream.quic.handshake_timeout = conf->upstream.connect_timeout;
