@@ -55,6 +55,13 @@ typedef ngx_int_t (*ngx_quic_init_ssl_pt)(ngx_connection_t *c, void *data);
 
 
 typedef enum {
+    NGX_QUIC_CC_DEFAULT = 0,
+    NGX_QUIC_CC_RENO,
+    NGX_QUIC_CC_CUBIC
+} ngx_quic_cc_algorithm_e;
+
+
+typedef enum {
     NGX_QUIC_STREAM_SEND_READY = 0,
     NGX_QUIC_STREAM_SEND_SEND,
     NGX_QUIC_STREAM_SEND_DATA_SENT,
@@ -99,6 +106,7 @@ struct ngx_quic_conf_s {
     ngx_int_t                      stream_close_code;
     ngx_int_t                      stream_reject_code_uni;
     ngx_int_t                      stream_reject_code_bidi;
+    ngx_uint_t                     cc_algorithm;
 
     ngx_quic_init_pt               init;
     ngx_quic_shutdown_pt           shutdown;

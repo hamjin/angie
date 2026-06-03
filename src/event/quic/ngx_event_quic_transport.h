@@ -269,11 +269,16 @@ struct ngx_quic_frame_s {
     uint64_t                                    pnum;
     size_t                                      plen;
     ngx_msec_t                                  send_time;
+    uint64_t                                    prior_delivered;
+    uint64_t                                    prior_delivered_time;
+    ngx_msec_t                                  first_sent_time;
+    uint64_t                                    tx_in_flight;
     ssize_t                                     len;
     unsigned                                    need_ack:1;
     unsigned                                    pkt_need_ack:1;
     unsigned                                    ignore_congestion:1;
     unsigned                                    ignore_loss:1;
+    unsigned                                    is_app_limited:1;
 
     ngx_chain_t                                *data;
     union {

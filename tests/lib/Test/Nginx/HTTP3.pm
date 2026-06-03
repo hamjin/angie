@@ -14,6 +14,7 @@ use strict;
 use IO::Socket::INET;
 use IO::Select;
 use Data::Dumper;
+use Socket qw(SOL_SOCKET SO_RCVBUF SO_SNDBUF);
 
 use Test::Nginx;
 
@@ -21,6 +22,15 @@ use Exporter qw/ import /;
 BEGIN {
 	our @EXPORT_OK = qw/ http3_get http3_start http3_end http3_close /;
 }
+
+our $HAVE_SOCKET_MSGHDR = eval {
+	require Socket::MsgHdr;
+	Socket::MsgHdr->import();
+	1;
+};
+
+use constant SOL_UDP_NUM => 17;
+use constant UDP_GRO_NUM => 104;
 
 sub new {
 	my $self = {};
@@ -54,19 +64,23 @@ sub new {
 			$lport = undef;
 		}
 
-		$self->{socket} = IO::Socket::INET->new(
-			Proto => "udp",
-			PeerAddr => '127.0.0.1:' . port($port || 8980, udp => 1),
-			LocalPort => $lport,
-			LocalAddr => $extra{local_addr} || '127.0.0.1',
-		);
-	}
+			$self->{socket} = IO::Socket::INET->new(
+				Proto => "udp",
+				PeerAddr => '127.0.0.1:' . port($port || 8980, udp => 1),
+				LocalPort => $lport,
+				LocalAddr => $extra{local_addr} || '127.0.0.1',
+			);
+
+			tune_udp_socket($self->{socket}) if $self->{socket};
+		}
 
 	$self->{repeat} = 0;
 	$self->{token} = $extra{token} || '';
 	$self->{psk_list} = $extra{psk_list} || [];
 	$self->{early_data} = $extra{early_data};
 	$self->{send_ack} = 1;
+	$self->{ack_every} = $extra{ack_every} || 1;
+	$self->{ack_counter} = 0;
 
 	$self->{sni} = exists $extra{sni} ? $extra{sni} : 'localhost';
 	$self->{cipher} = 0x1301;
@@ -83,6 +97,8 @@ sub new {
 	$self->{dynamic_encode} = [];
 	$self->{last_stream} = -4;
 	$self->{buf} = '';
+	$self->{bufq} = [];
+	$self->{selector} = IO::Select->new($self->{socket}) if $self->{socket};
 
 	$self->init();
 	$self->init_key_schedule();
@@ -91,11 +107,26 @@ sub new {
 	return $self;
 }
 
+sub tune_udp_socket {
+	my ($socket) = @_;
+	my $size;
+
+	return if !defined $socket;
+
+	$size = 4 * 1024 * 1024;
+
+	$socket->setsockopt(SOL_SOCKET, SO_RCVBUF, pack('i', $size));
+	$socket->setsockopt(SOL_SOCKET, SO_SNDBUF, pack('i', $size));
+	$socket->setsockopt(SOL_UDP_NUM, UDP_GRO_NUM, pack('i', 1))
+		if $HAVE_SOCKET_MSGHDR;
+}
+
 sub init {
 	my ($self) = @_;
 	$self->{keys} = [];
 	$self->{key_phase} = 0;
 	$self->{pn} = [[-1, -1, -1, -1], [-1, -1, -1, -1]];
+	$self->{ack_sent} = [{},{},{},{}];
 	$self->{crypto_in} = [[],[],[],[]];
 	$self->{stream_in} = [];
 	$self->{frames_in} = [];
@@ -656,7 +687,9 @@ again:
 push_me:
 		push @got, $frame;
 
-		Test::Nginx::log_core('||', $_) for split "\n", Dumper $frame;
+		if ($ENV{TEST_ANGIE_VERBOSE}) {
+			Test::Nginx::log_core('||', $_) for split "\n", Dumper $frame;
+		}
 
 		$buf = substr($buf, $length);
 
@@ -666,12 +699,53 @@ push_me:
 frames:
 		while ($frame = shift @{$self->{frames_in}}) {
 			push @got, $frame;
-			Test::Nginx::log_core('||', $_) for split "\n",
-				Dumper $frame;
+			if ($ENV{TEST_ANGIE_VERBOSE}) {
+				Test::Nginx::log_core('||', $_) for split "\n",
+					Dumper $frame;
+			}
 			return \@got unless test_fin($frame, $extra{all});
 		}
 	}
 	return \@got;
+}
+
+sub read_perf_streams {
+	my ($self, %extra) = @_;
+	my (@got);
+	my $s = $self->{socket};
+	my $wait = $extra{wait};
+
+	local $Data::Dumper::Terse = 1;
+
+	while (1) {
+		while (my $frame = shift @{$self->{frames_in}}) {
+			push @got, $frame;
+
+			if ($ENV{TEST_ANGIE_VERBOSE}) {
+				Test::Nginx::log_core('||', $_) for split "\n",
+					Dumper $frame;
+			}
+
+			return \@got unless test_fin($frame, $extra{all});
+		}
+
+		return \@got unless read_datagram($self, $s, $wait);
+
+		while ($self->{buf}) {
+			my ($level, $plaintext);
+
+			($level, $plaintext, $self->{buf}, $self->{token})
+				= $self->decrypt_aead($self->{buf});
+
+			if (!defined $plaintext) {
+				$self->{buf} = '';
+				last;
+			}
+
+			$self->retry(), return if $self->{token};
+			$self->handle_perf_plaintext($plaintext, $level);
+		}
+	}
 }
 
 sub push_stream {
@@ -1574,6 +1648,12 @@ sub handle_frames {
 
 	@frames = grep { $_->{type} eq 'STREAM' } @$frames;
 	while (my $frame = shift @frames) {
+		if ($self->{perf_streams} && $self->{perf_streams}{$frame->{id}}
+			&& perf_consume_stream_frame($self, $frame))
+		{
+			next;
+		}
+
 		$self->{stream_in}[$frame->{id}] ||= { buf => [], pos => 0 };
 		insert_crypto($self->{stream_in}[$frame->{id}]->{buf}, [
 			$frame->{offset},
@@ -1589,33 +1669,320 @@ sub handle_frames {
 	}
 
 	my $ack = $self->{ack}[$level];
+	my $ack_pending = scalar keys %$ack;
+	my $perf_ack_fast = $self->{perf_mode} && $level == 3;
 
 	# stop tracking acknowledged ACK ranges
 
-	@frames = grep { $_->{type} eq 'ACK' } @$frames;
-	while (my $frame = shift @frames) {
-		my $max = $frame->{largest};
-		my $min = $max - $frame->{first};
+	if (!$perf_ack_fast) {
+		@frames = grep { $_->{type} eq 'ACK' } @$frames;
+		while (my $frame = shift @frames) {
+			my $max = $frame->{largest};
+			my $min = $max - $frame->{first};
+			my $covered;
 
-		for my $num ($min .. $max) {
-			for my $pn (keys %$ack) {
-				delete $ack->{$pn} if $ack->{$pn} == $num;
+			for my $num ($min .. $max) {
+				$covered = delete $self->{ack_sent}[$level]{$num};
+				next if !$covered;
+				delete $ack->{$_} for @$covered;
 			}
 		}
 	}
 
-	my $send_ack = $self->encrypt_aead(build_ack($ack), $level);
-	$self->{socket}->syswrite($send_ack) if $self->{send_ack};
+	if ($self->{send_ack} && $ack_pending != 0) {
+		$self->{ack_counter}++;
 
-	for my $pn (keys %$ack) {
-		$ack->{$pn} = $self->{pn}[0][$level] if $ack->{$pn} == -1;
-	}
+			if ($self->{ack_counter} >= $self->{ack_every}) {
+				my $send_ack = $self->encrypt_aead(build_ack($ack), $level);
+				my @covered = keys %$ack;
+				$self->{socket}->syswrite($send_ack);
+				$self->{ack_counter} = 0;
+
+				if ($perf_ack_fast) {
+					%$ack = ();
+				} else {
+					for my $pn (keys %$ack) {
+						$ack->{$pn} = $self->{pn}[0][$level] if $ack->{$pn} == -1;
+					}
+				}
+
+				$self->{ack_sent}[$level]{$self->{pn}[0][$level]} = [ @covered ]
+					unless $perf_ack_fast;
+			}
+		}
 
 	my ($frame) = grep { $_->{type} eq 'NEW_TOKEN' } @$frames;
 	$self->{token} = $frame->{token} || '';
 
 	push @{$self->{frames_in}}, grep { $_->{type} ne 'CRYPTO'
 		&& $_->{type} ne 'STREAM' } @$frames;
+}
+
+sub handle_perf_plaintext {
+	my ($self, $buf, $level) = @_;
+	my (@frames);
+	my ($frame, $len, $offset, $type, $val);
+
+	$offset = 0;
+
+	while ($offset < length($buf)) {
+		($len, $type) = parse_int(substr($buf, $offset, 8));
+		$offset += $len;
+		next if $type == 0;
+
+		if (($type & 0xf8) == 0x08) {
+			my ($sid, $stream_len, $stream_off, $payload);
+			my $fin = ($type & 0x1) ? 1 : 0;
+
+			($len, $sid) = parse_int(substr($buf, $offset));
+			$offset += $len;
+
+			if ($type & 0x4) {
+				($len, $stream_off) = parse_int(substr($buf, $offset));
+				$offset += $len;
+			} else {
+				$stream_off = 0;
+			}
+
+			if ($type & 0x2) {
+				($len, $stream_len) = parse_int(substr($buf, $offset));
+				$offset += $len;
+			} else {
+				$stream_len = length($buf) - $offset;
+			}
+
+			$payload = substr($buf, $offset, $stream_len);
+			$offset += $stream_len;
+
+			if ($self->{perf_streams} && $self->{perf_streams}{$sid}) {
+				perf_consume_stream_frame($self, {
+					id => $sid,
+					offset => $stream_off,
+					length => $stream_len,
+					payload => $payload,
+					($fin ? (fin => 1) : ()),
+				});
+				next;
+			}
+
+			push @frames, {
+				type => 'STREAM',
+				id => $sid,
+				offset => $stream_off,
+				length => $stream_len,
+				payload => $payload,
+				($fin ? (fin => 1) : ()),
+			};
+			next;
+		}
+
+		$frame = { type => $type };
+
+		if ($type == 1) {
+			$frame->{type} = 'PING';
+		}
+		if ($type == 2) {
+			$frame->{type} = 'ACK';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{largest} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{delay} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{count} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{first} = $val;
+			$offset += $len;
+		}
+		if ($type == 4) {
+			$frame->{type} = 'RESET_STREAM';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{sid} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{code} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{final_size} = $val;
+			$offset += $len;
+		}
+		if ($type == 5) {
+			$frame->{type} = 'STOP_SENDING';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{sid} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{code} = $val;
+			$offset += $len;
+		}
+		if ($type == 6) {
+			my ($olen, $off);
+			($olen, $off) = parse_int(substr($buf, $offset));
+			$offset += $olen;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$offset += $len;
+			$frame->{type} = 'CRYPTO';
+			$frame->{length} = $val;
+			$frame->{offset} = $off;
+			$frame->{payload} = substr($buf, $offset, $val);
+			$offset += $val;
+		}
+		if ($type == 7) {
+			$frame->{type} = 'NEW_TOKEN';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$offset += $len;
+			$frame->{token} = substr($buf, $offset, $val);
+			$offset += $val;
+		}
+		if ($type == 18 || $type == 19) {
+			$frame->{type} = 'MAX_STREAMS';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{val} = $val;
+			$frame->{uni} = 1 if $type == 19;
+			$offset += $len;
+		}
+		if ($type == 24) {
+			$frame->{type} = 'NCID';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{seqno} = $val;
+			$offset += $len;
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{rpt} = $val;
+			$offset += $len;
+			$len = unpack("C", substr($buf, $offset, 1));
+			$frame->{length} = $len;
+			$offset += 1;
+			$frame->{cid} = substr($buf, $offset, $len);
+			$offset += $len;
+			$frame->{token} = substr($buf, $offset, 16);
+			$offset += 16;
+		}
+		if ($type == 26) {
+			$frame->{type} = 'PATH_CHALLENGE';
+			$frame->{data} = substr($buf, $offset, 8);
+			$offset += 8;
+		}
+		if ($type == 27) {
+			$frame->{type} = 'PATH_RESPONSE';
+			$frame->{data} = substr($buf, $offset, 8);
+			$offset += 8;
+		}
+		if ($type == 28 || $type == 29) {
+			$frame->{type} = 'CONNECTION_CLOSE';
+			($len, $val) = parse_int(substr($buf, $offset));
+			$frame->{error} = $val;
+			$offset += $len;
+			if ($type == 28) {
+				($len, $val) = parse_int(substr($buf, $offset));
+				$frame->{frame_type} = $val;
+				$offset += $len;
+			}
+			($len, $val) = parse_int(substr($buf, $offset));
+			$offset += $len;
+			$frame->{phrase} = substr($buf, $offset, $val);
+			$offset += $val;
+		}
+		if ($type == 30) {
+			$frame->{type} = 'HANDSHAKE_DONE';
+		}
+
+		push @frames, $frame;
+	}
+
+	$self->handle_frames(\@frames, $level);
+}
+
+sub perf_consume_stream_frame {
+	my ($self, $frame) = @_;
+	my $perf = $self->{perf_streams}{$frame->{id}};
+	my ($data_len, $done, $offset, $payload, $fin);
+
+	return 0 if !defined $perf;
+
+	$offset = $frame->{offset};
+	$payload = $frame->{payload};
+	$fin = $frame->{fin} ? 1 : 0;
+	$data_len = 0;
+	$done = 0;
+
+	if ($offset + length($payload) <= $perf->{offset}) {
+		$perf->{saw_fin} ||= $fin;
+		return 1;
+	}
+
+	if ($offset < $perf->{offset}) {
+		substr($payload, 0, $perf->{offset} - $offset, '');
+		$offset = $perf->{offset};
+	}
+
+	$perf->{pending}{$offset} = [ $payload, $fin ]
+		if !exists $perf->{pending}{$offset};
+
+	while (exists $perf->{pending}{$perf->{offset}}) {
+		my ($chunk, $chunk_fin) = @{ delete $perf->{pending}{$perf->{offset}} };
+		my ($len, $type, $take);
+
+		$perf->{offset} += length($chunk);
+		$perf->{buf} .= $chunk;
+		$perf->{saw_fin} ||= $chunk_fin;
+
+		while (1) {
+			if (!defined $perf->{frame_type}) {
+				($len, $type) = parse_int($perf->{buf});
+				last if !defined $len;
+				substr($perf->{buf}, 0, $len, '');
+				$perf->{frame_type} = $type;
+			}
+
+			if (!defined $perf->{frame_left}) {
+				($len, $perf->{frame_left}) = parse_int($perf->{buf});
+				last if !defined $len;
+				substr($perf->{buf}, 0, $len, '');
+			}
+
+			last if !length($perf->{buf});
+
+			$take = length($perf->{buf});
+			$take = $perf->{frame_left} if $take > $perf->{frame_left};
+
+			if ($perf->{frame_type} == 0) {
+				$data_len += $take;
+			}
+
+			substr($perf->{buf}, 0, $take, '');
+			$perf->{frame_left} -= $take;
+
+			if ($perf->{frame_left} == 0) {
+				delete $perf->{frame_type};
+				delete $perf->{frame_left};
+				next;
+			}
+
+			last;
+		}
+	}
+
+	if ($perf->{saw_fin}
+		&& !%{ $perf->{pending} }
+		&& !defined $perf->{frame_left}
+		&& !length($perf->{buf}))
+	{
+		$done = 1;
+	}
+
+	if ($data_len || $done) {
+		push @{$self->{frames_in}}, {
+			type => 'DATA',
+			sid => $frame->{id},
+			length => $data_len,
+			data => '',
+			flags => $done ? 1 : 0,
+		};
+	}
+
+	return 1;
 }
 
 sub insert_crypto {
@@ -2189,14 +2556,14 @@ again:
 		my $txt;
 
 		if (!length($self->{buf})) {
-			return unless IO::Select->new($s)->can_read($timo || 3);
-			$s->sysread($self->{buf}, 65527);
+			return unless read_datagram($self, $s, $timo);
 			$txt = "recv";
 		} else {
 			$txt =  "remaining";
 		}
 		my $len = length $self->{buf};
-		Test::Nginx::log_core('||', sprintf("$txt = [%d]", $len));
+		Test::Nginx::log_core('||', "$txt = [$len]")
+			if $ENV{TEST_ANGIE_VERBOSE};
 
 		while ($self->{buf}) {
 			($level, $plaintext, $self->{buf}, $self->{token})
@@ -2256,14 +2623,16 @@ sub read_tls_message {
 		my $txt;
 
 		if (!length($$buf)) {
-			return unless IO::Select->new($s)->can_read(3);
-			$s->sysread($$buf, 65527);
+			return unless read_datagram($self, $s, 3);
+			$$buf = $self->{buf};
+			$self->{buf} = '';
 			$txt = "recv";
 		} else {
 			$txt = "remaining";
 		}
 		my $len = length $$buf;
-		Test::Nginx::log_core('||', sprintf("$txt = [%d]", $len));
+		Test::Nginx::log_core('||', "$txt = [$len]")
+			if $ENV{TEST_ANGIE_VERBOSE};
 
 		while ($$buf) {
 			(my $level, my $plaintext, $$buf, $self->{token})
@@ -2387,6 +2756,68 @@ sub parse_tls_nst {
 		$off += 4 + $len;
 		substr($self->{crypto_in}[3][0][2], 0, $off) = '';
 	}
+}
+
+sub read_datagram {
+	my ($self, $socket, $timo) = @_;
+	my ($buf, $hdr, $len, @cmsg, $segsize);
+
+	if (@{$self->{bufq}}) {
+		$self->{buf} = shift @{$self->{bufq}};
+		return 1;
+	}
+
+	return unless $self->{selector}->can_read($timo || 3);
+
+	if ($HAVE_SOCKET_MSGHDR) {
+		$hdr = $self->{recv_hdr} ||= Socket::MsgHdr->new(
+			buflen => 65535,
+			controllen => 256,
+			namelen => 128,
+		);
+		$hdr->buflen(65535);
+		$hdr->controllen(256);
+		$hdr->namelen(128);
+
+		$len = recvmsg($socket, $hdr, 0);
+		return unless defined $len;
+
+		$buf = substr($hdr->buf, 0, $hdr->buflen);
+		@cmsg = $hdr->cmsghdr;
+
+		while (@cmsg) {
+			my ($level, $type, $data) = splice(@cmsg, 0, 3);
+
+			next if $level != SOL_UDP_NUM || $type != UDP_GRO_NUM;
+			next if length($data) < 4;
+
+			$segsize = unpack('i', $data);
+			last;
+		}
+
+		if ($segsize && $ENV{TEST_ANGIE_GRO_TRACE}) {
+			Test::Nginx::log_core('||',
+				"udp_gro len=$len segsize=$segsize");
+		}
+
+		if ($segsize && $len > $segsize) {
+			for (my $off = 0; $off < $len; $off += $segsize) {
+				push @{$self->{bufq}},
+					substr($buf, $off,
+					       ($off + $segsize < $len)
+					           ? $segsize : $len - $off);
+			}
+
+			$self->{buf} = shift @{$self->{bufq}};
+			return 1;
+		}
+
+		$self->{buf} = $buf;
+		return 1;
+	}
+
+	$socket->sysread($self->{buf}, 65527);
+	return 1;
 }
 
 sub build_tls_client_hello {

@@ -9,6 +9,7 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 #include <ngx_event_quic_connection.h>
+#include <ngx_event_quic_cc.h>
 
 
 #define NGX_QUIC_MAX_UDP_SEGMENT_BUF  65487 /* 65K - IPv6 header */
@@ -57,7 +58,7 @@ static ssize_t ngx_quic_send_segments(ngx_connection_t *c, u_char *buf,
 #endif
 static ssize_t ngx_quic_output_packet(ngx_connection_t *c,
     ngx_quic_send_ctx_t *ctx, u_char *data, size_t max, size_t min,
-    ngx_uint_t ack_only);
+    ngx_uint_t ack_only, size_t in_flight);
 static void ngx_quic_init_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     ngx_quic_header_t *pkt, ngx_quic_path_t *path);
 static ngx_uint_t ngx_quic_get_padding_level(ngx_connection_t *c);
@@ -124,6 +125,8 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
     u_char                 *p;
     uint64_t                preserved_pnum[NGX_QUIC_SEND_CTX_LAST];
     ngx_uint_t              i, pad;
+    ngx_msec_t              delay;
+    ngx_uint_t              ack_only;
     ngx_quic_path_t        *path;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_congestion_t  *cg;
@@ -164,8 +167,12 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
                 return NGX_OK;
             }
 
+            ack_only = cg->in_flight >= cg->window;
+
             n = ngx_quic_output_packet(c, ctx, p, len, min,
-                                       cg->in_flight >= cg->window);
+                                       ack_only
+                                       || ngx_quic_cc_pacing_delay(c),
+                                       cg->in_flight + (p - dst));
             if (n == NGX_ERROR) {
                 return NGX_ERROR;
             }
@@ -176,6 +183,12 @@ ngx_quic_create_datagrams(ngx_connection_t *c)
 
         len = p - dst;
         if (len == 0) {
+            delay = ngx_quic_cc_pacing_delay(c);
+
+            if (delay) {
+                ngx_quic_cc_set_pacing_timer(qc, delay);
+            }
+
             break;
         }
 
@@ -291,6 +304,10 @@ ngx_quic_allow_segmentation(ngx_connection_t *c)
 
     qc = ngx_quic_get_connection(c);
 
+    if (ngx_quic_cc_pacing_delay(c)) {
+        return 0;
+    }
+
     if (!qc->conf->gso_enabled) {
         return 0;
     }
@@ -376,7 +393,8 @@ ngx_quic_create_segments(ngx_connection_t *c)
 
         if (len && cg->in_flight + (p - dst) < cg->window) {
 
-            n = ngx_quic_output_packet(c, ctx, p, len, len, 0);
+            n = ngx_quic_output_packet(c, ctx, p, len, len, 0,
+                                       cg->in_flight + (p - dst));
             if (n == NGX_ERROR) {
                 return NGX_ERROR;
             }
@@ -560,7 +578,8 @@ ngx_quic_get_padding_level(ngx_connection_t *c)
 
 static ssize_t
 ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
-    u_char *data, size_t max, size_t min, ngx_uint_t ack_only)
+    u_char *data, size_t max, size_t min, ngx_uint_t ack_only,
+    size_t in_flight)
 {
     size_t                  len, pad, min_payload, max_payload;
     u_char                 *p;
@@ -692,6 +711,8 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
 
         f->plen = res.len;
+
+        ngx_quic_cc_init_rate_sample(qc, f, now, in_flight);
     }
 
     while (nframes--) {
@@ -1417,6 +1438,8 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     frame->pnum = ctx->pnum;
     frame->send_time = now;
     frame->plen = res.len;
+
+    ngx_quic_cc_init_rate_sample(qc, frame, now, cg->in_flight);
 
     ctx->pnum++;
 
