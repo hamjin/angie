@@ -482,8 +482,14 @@ sub skip_errors_check {
 	return $self;
 }
 
+sub error_log_level {
+	my ($self, $level) = @_;
+	$self->{_error_log_level} = $level;
+	return $self;
+}
+
 sub skip_api_check {
-	my $self = shift;
+	my ($self, $code) = @_;
 	$self->{_api_skipped} = 1;
 	return $self;
 }
@@ -513,14 +519,16 @@ sub run(;$) {
 		# using kill '-KILL', $pgrp
 		setpgrp;
 
+		my $log_level = $self->{_error_log_level} || 'debug';
+
 		my @globals = $self->{_test_globals} ?
 			() : ('-g', "pid $testdir/nginx.pid; "
-			. "error_log $testdir/error.log debug;");
+			. "error_log $testdir/error.log $log_level;");
 		my @valgrind = (not $ENV{TEST_ANGIE_VALGRIND}) ?
 			() : ('valgrind', '-q',
 			"--log-file=$testdir/valgrind.log");
 		exec(@valgrind, $NGINX, '-p', "$testdir/", '-c', 'nginx.conf',
-			'-e', 'error.log', '--log-level=debug', @globals)
+			'-e', 'error.log', "--log-level=$log_level", @globals)
 			or die "Unable to exec(): $!\n";
 	}
 
@@ -590,9 +598,11 @@ sub dump_config() {
 
 	my $testdir = $self->{_testdir};
 
+	my $log_level = $self->{_error_log_level} || 'debug';
+
 	my @globals = $self->{_test_globals} ?
 		() : ('-g', "pid $testdir/nginx.pid; "
-		. "error_log $testdir/error.log debug;");
+		. "error_log $testdir/error.log $log_level;");
 	my $command = "$NGINX -T -p $testdir/ -c nginx.conf "
 		. "-e error.log " . join(' ', @globals);
 
