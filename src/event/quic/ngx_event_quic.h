@@ -57,7 +57,8 @@ typedef ngx_int_t (*ngx_quic_init_ssl_pt)(ngx_connection_t *c, void *data);
 typedef enum {
     NGX_QUIC_CC_DEFAULT = 0,
     NGX_QUIC_CC_RENO,
-    NGX_QUIC_CC_CUBIC
+    NGX_QUIC_CC_CUBIC,
+    NGX_QUIC_CC_BBR
 } ngx_quic_cc_algorithm_e;
 
 
@@ -107,6 +108,7 @@ struct ngx_quic_conf_s {
     ngx_int_t                      stream_reject_code_uni;
     ngx_int_t                      stream_reject_code_bidi;
     ngx_uint_t                     cc_algorithm;
+    void                          *cc_algo_conf;
 
     ngx_quic_init_pt               init;
     ngx_quic_shutdown_pt           shutdown;

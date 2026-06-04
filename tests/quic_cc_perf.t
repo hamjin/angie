@@ -35,6 +35,7 @@ use constant MAX_MEANINGFUL_THROUGHPUT_BPS => 1000 * 1000 * 1000;
 use constant PERF_FLOW_LIMIT_BYTES =>
 	MAX_MEANINGFUL_THROUGHPUT_BPS / 8
 	* ((SCENARIO_DURATION_MS + FORWARDER_DRAIN_MS) / 1000);
+use constant CONTROL_H3_SERVER => 'quic_cc/control_h3_server';
 
 my @cases = (
 	{
@@ -49,7 +50,41 @@ my @cases = (
 		path => '/cubic',
 		body => 'cubic',
 	},
+	{
+		name => 'bbr-default',
+		cc => 'bbr',
+		path => '/bbr-default',
+		body => 'bbr-default',
+	},
+	{
+		name => 'bbr-google',
+		cc => 'bbr',
+		path => '/bbr-google',
+		body => 'bbr-google',
+	},
+	{
+		name => 'bbr-sing',
+		cc => 'bbr',
+		path => '/bbr-sing',
+		body => 'bbr-sing',
+	},
+	{
+		name => 'bbr-hy2',
+		cc => 'bbr',
+		path => '/bbr-hy2',
+		body => 'bbr-hy2',
+	},
 );
+
+my @source_profiles = (
+	{ name => 'bbr-google-control', algorithm => 'bbr', profile => 'google' },
+	{ name => 'bbr-sing-control',   algorithm => 'bbr', profile => 'sing'   },
+	{ name => 'bbr-hy2-control',    algorithm => 'bbr', profile => 'hy2'    },
+);
+my %case_to_control = map {
+	(my $case_name = $_->{name}) =~ s/-control$//;
+	($case_name => $_->{name})
+} @source_profiles;
 
 my @scenarios = (
 	{
@@ -245,6 +280,7 @@ my $forwarder = 'quic_cc/forwarder';
 
 system('make -C quic_cc clean all > /dev/null 2>&1') == 0
 	or die "Can't build cc test harness: $!";
+		-f 'quic_cc/control_h3_server' or die "control_h3_server binary not built";
 
 my $full = $ENV{ANGIE_CC_PERF_SIMPLE} ? 0 : 1;
 my $runs_per_case = RUNS_PER_CASE;
@@ -259,6 +295,8 @@ if (defined $ENV{ANGIE_CC_PERF_SCENARIO}) {
 	@active_scenarios = $full ? @scenarios : ($scenarios[0]);
 }
 my $tests_per_tuple = 18;
+my $control_assertions_per_comparison = 4;
+my $bbr_control_cases = scalar(keys %case_to_control);
 my $config_tests = 0;
 my $acceptance_tests = 0;
 my %perf_results;
@@ -266,8 +304,8 @@ my $perf_stream_buffer_size = PERF_STREAM_RESPONSE_BYTES;
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 cryptx/)
 	->has_daemon('openssl')->plan($config_tests
-		+ scalar(@cases) * scalar(@active_scenarios) * $runs_per_case
-		* $tests_per_tuple + $acceptance_tests)
+		+ scalar(@cases) * scalar(@active_scenarios)
+		* $tests_per_tuple + $bbr_control_cases * scalar(@active_scenarios) * $control_assertions_per_comparison + $acceptance_tests)
 	->error_log_level('warn');
 
 my $server_port = port(8987, udp => 1);
@@ -276,6 +314,11 @@ my $server_port = port(8987, udp => 1);
 sub write_case_config {
 	my ($case) = @_;
 	my $params = '';
+
+	if ($case->{cc} eq 'bbr') {
+		(my $profile = $case->{name}) =~ s/^bbr-//;
+		$params .= "    quic_cc_conf profile $profile;\n";
+	}
 
 	$t->skip_api_check()->write_file_expand('nginx.conf', <<"EOF");
 
@@ -345,9 +388,11 @@ foreach my $name ('localhost') {
 $t->write_file('perf.bin', 'X' x PERF_STREAM_RESPONSE_BYTES);
 
 # Kill any leftover angie processes from prior test runs to avoid port conflicts
-cleanup_stale_angie();
+cleanup_stale_processes();
+	wait_for_port_free($server_port, 10);
 
 my $tuple_index = 0;
+my $control_index = 0;
 my $executed = 0;
 my $tuple_count = scalar(@cases) * scalar(@active_scenarios) * $runs_per_case;
 
@@ -361,24 +406,44 @@ for my $scenario (@active_scenarios) {
 		# Wait for the QUIC port to be fully ready before testing
 		wait_for_quic_ready($server_port);
 
-		for my $run (1 .. $runs_per_case) {
-			run_case($case, $scenario, $run);
-			$executed++;
-
+		# Run 1 emits the test plan assertions; runs 2-3 collect
+		# extra samples silently to improve aggregate accuracy.
+		run_case($case, $scenario, 1);
+		$executed++;
+		for my $run (2 .. $runs_per_case) {
 			if ($executed < $tuple_count) {
 				select undef, undef, undef, RUN_GAP_MS / 1000;
 			}
+			run_case_silent($case, $scenario, $run);
+			$executed++;
+		}
+		if ($executed < $tuple_count) {
+			select undef, undef, undef, RUN_GAP_MS / 1000;
 		}
 
 		# Stop angie to release the port, then clean up
 		$t->stop();
 		wait_for_port_free($server_port, 10);
+		if (exists $case_to_control{$case->{name}}) {
+			my $control_name = $case_to_control{$case->{name}};
+			run_control_comparison($case, $scenario, $control_name);
+		}
 		cleanup_stale_processes();
 		cleanup_iteration_files();
 	}
 }
 
-undef $t;
+for my $scenario (@active_scenarios) {
+	my $sn = $scenario->{name};
+	my $b = eval { aggregate_perf_results('bbr-default', $scenario) };
+	my $c = eval { aggregate_perf_results('cubic', $scenario) };
+	my $r = eval { aggregate_perf_results('reno', $scenario) };
+	emit_cross_algo_diag($scenario, 'bbr-default', 'cubic', $b, $c) if $b && $c;
+	emit_cross_algo_diag($scenario, 'bbr-default', 'reno', $b, $r) if $b && $r;
+}
+
+
+eval { undef $t; };
 
 ###############################################################################
 
@@ -429,7 +494,7 @@ sub run_case {
 		select undef, undef, undef, 1 if $attempt < $max_retries;
 	}
 	ok(defined $s, "$label h3 perf control connection established");
-	$s->{ack_every} = PERF_ACK_EVERY;
+	$s->{ack_every} = PERF_ACK_EVERY if defined $s;
 
 	record_perf_result($case, $scenario, $run,
 		cc_perf($s, $listen_id, $label, $scenario, $stats_file, $fw));
@@ -1024,6 +1089,7 @@ sub cleanup_stale_processes {
 	my @patterns = (
 		$forwarder,
 		H3_CLIENT,
+		CONTROL_H3_SERVER,
 	);
 
 	if (!$opts{skip_angie}) {
@@ -1074,6 +1140,129 @@ sub cleanup_stale_processes {
 
 	# Extra wait for OS to release TCP/UDP sockets
 	select undef, undef, undef, 1;
+}
+
+
+sub wait_for_control_ready {
+	my ($port) = @_;
+	for my $attempt (1 .. 50) {
+		my $out = `ss -Hulnp sport = :$port 2>/dev/null`;
+		return 1 if defined $out && $out ne '';
+		select undef, undef, undef, 0.1;
+	}
+	diag("WARNING: control server port $port not ready after 5s");
+	return 0;
+}
+
+sub stop_control_server {
+	my ($pid, $port) = @_;
+	return if !defined $pid;
+	if (defined $t->{_daemons}) {
+		@{$t->{_daemons}} = grep { $_ != $pid } @{$t->{_daemons}};
+	}
+	for (1 .. 30) {
+		my $exited = waitpid($pid, WNOHANG);
+		return if $exited == $pid || $exited == -1;
+		select undef, undef, undef, 0.1;
+	}
+	kill 'TERM', $pid;
+	waitpid($pid, 0);
+	wait_for_port_free($port, 3);
+}
+
+sub run_control_comparison {
+	my ($case, $scenario, $control_name) = @_;
+	my ($fw, $control_pid, $listen_id, $label);
+	my $stats_file;
+	my $d = $t->testdir();
+	cleanup_stale_processes();
+	$listen_id = 8990 + $tuple_index++;
+	my $control_port = 9500 + $control_index++;
+	$label = "control $control_name $scenario->{name}";
+	$stats_file = "$d/forwarder-$listen_id.stats";
+	wait_for_port_free($listen_id, 3);
+	wait_for_port_free($control_port, 3);
+	$control_pid = $t->run_daemon(CONTROL_H3_SERVER,
+		'--listen', $control_port,
+		'--control', $control_name,
+		'--duration-ms', 0,
+		'--cert', "$d/localhost.crt",
+		'--key', "$d/localhost.key");
+	ok($control_pid, "$label control server started");
+	wait_for_control_ready($control_port);
+	$fw = $t->run_daemon($forwarder,
+		'--listen', port($listen_id, udp => 1),
+		'--target', $control_port,
+		'--rate-bps', $scenario->{rate_bps},
+		'--loss-ppm', $scenario->{loss_ppm},
+		'--loss-warmup-ms', loss_warmup_ms($scenario),
+		'--loss-first-keep', 5,
+		'--delay-ms', forwarder_delay_ms($scenario),
+		'--jitter-ms', $scenario->{jitter_ms},
+		'--outage-after-ms', $scenario->{outage_after_ms},
+		'--outage-duration-ms', $scenario->{outage_duration_ms},
+		'--duration-ms', 0,
+		'--stats-file', $stats_file);
+	ok($fw, "$label forwarder started");
+	select undef, undef, undef, 0.1;
+	my $start = time();
+	my $summary = run_h3_client($listen_id, "/$control_name",
+		"$label control perf",
+		duration_ms => SCENARIO_DURATION_MS,
+		discard_body => 1);
+	my ($reported_bytes, $reported_requests) =
+		$summary =~ /status=200 bytes=(\d+) requests=(\d+) output=/;
+	my $bytes = $reported_bytes || 0;
+	my $elapsed = time() - $start;
+	$elapsed = 0.001 if $elapsed < 0.001;
+	my $throughput = $bytes * 8 / $elapsed;
+	my $fw_metrics = forwarder_metrics($stats_file, $fw, $listen_id);
+	stop_control_server($control_pid, $control_port);
+	my $control_metrics = {
+		throughput => $throughput,
+		latency_ms => forwarder_delay_ms($scenario),
+		jitter => 0,
+		loss_rate_ppm => $fw_metrics->{loss_rate_ppm} || 0,
+	};
+	$perf_results{$scenario->{name}}{"control-$control_name"}{1} = $control_metrics;
+	emit_control_comparison($case, $scenario, $control_name);
+}
+
+sub emit_control_comparison {
+	my ($case, $scenario, $control_name) = @_;
+	my $case_name = $case->{name};
+	my $scenario_name = $scenario->{name};
+	my $angie_agg = aggregate_perf_results($case_name, $scenario);
+	my $control_metrics = $perf_results{$scenario_name}{"control-$control_name"}{1};
+	return if !defined $angie_agg || !defined $control_metrics;
+	my $angie_tp = $angie_agg->{throughput};
+	my $control_tp = $control_metrics->{throughput};
+	my $tp_ratio = $angie_tp > 0 ? $control_tp / $angie_tp : 0;
+	my $angie_loss = $angie_agg->{loss_rate_ppm};
+	my $control_loss = $control_metrics->{loss_rate_ppm};
+	diag(sprintf("cc_control_comparison case=\"%s\" control=\"%s\" scenario=\"%s\" "
+		. "angie_throughput_bps=%.0f control_throughput_bps=%.0f "
+		. "throughput_ratio=%.3f "
+		. "angie_loss_rate_ppm=%u control_loss_rate_ppm=%u",
+		$case_name, $control_name, $scenario_name,
+		$angie_tp, $control_tp, $tp_ratio,
+		$angie_loss, $control_loss));
+}
+
+sub emit_cross_algo_diag {
+	my ($scenario, $algo_a, $algo_b, $metrics_a, $metrics_b) = @_;
+	return if !defined $metrics_a || !defined $metrics_b;
+	my $tp_a = $metrics_a->{throughput} || 0;
+	my $tp_b = $metrics_b->{throughput} || 0;
+	my $ratio = $tp_a > 0 ? $tp_b / $tp_a : 0;
+	my $loss_a = $metrics_a->{loss_rate_ppm} || 0;
+	my $loss_b = $metrics_b->{loss_rate_ppm} || 0;
+	diag(sprintf("cc_cross_algo_comparison algo_a=\"%s\" algo_b=\"%s\" scenario=\"%s\" "
+		. "a_throughput_bps=%.0f b_throughput_bps=%.0f "
+		. "throughput_ratio_b_vs_a=%.3f "
+		. "a_loss_rate_ppm=%u b_loss_rate_ppm=%u",
+		$algo_a, $algo_b, $scenario->{name},
+		$tp_a, $tp_b, $ratio, $loss_a, $loss_b));
 }
 
 
