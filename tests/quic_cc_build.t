@@ -24,6 +24,8 @@ my @required = qw(
 	src/event/quic/congestion_control/ngx_event_quic_reno.c
 	src/event/quic/congestion_control/ngx_event_quic_cubic.h
 	src/event/quic/congestion_control/ngx_event_quic_cubic.c
+	src/event/quic/congestion_control/ngx_event_quic_bbr.h
+	src/event/quic/congestion_control/ngx_event_quic_bbr.c
 	tests/quic_cc_perf.t
 	tests/quic_cc/Makefile
 	tests/quic_cc/h3_client.c
@@ -53,8 +55,15 @@ like($modules, qr/src\/event\/quic\/congestion_control\/ngx_event_quic_cubic\.h/
 	'cubic header is a QUIC module dependency');
 like($modules, qr/src\/event\/quic\/congestion_control\/ngx_event_quic_cubic\.c/,
 	'cubic source is built');
-
+like($modules, qr/src\/event\/quic\/congestion_control\/ngx_event_quic_bbr\.h/,
+	'bbr header is a QUIC module dependency');
+like($modules, qr/src\/event\/quic\/congestion_control\/ngx_event_quic_bbr\.c/,
+	'bbr source is built');
 my $h3 = read_file("$root/src/http/v3/ngx_http_v3_module.c");
+like($h3, qr/NGX_QUIC_CC_BBR/, 'quic_cc can select bbr');
+like($h3, qr/ngx_string\("quic_cc_conf"\)/,
+	'quic_cc_conf directive is present');
+
 like($h3, qr/ngx_string\("quic_cc"\)/, 'quic_cc directive exists');
 like($h3, qr/NGX_CONF_TAKE1/, 'quic_cc takes one argument');
 like($h3, qr/NGX_QUIC_CC_RENO/, 'quic_cc can select reno');

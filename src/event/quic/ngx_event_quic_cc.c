@@ -10,6 +10,7 @@
 #include <ngx_event_quic_cc.h>
 #include <ngx_event_quic_reno.h>
 #include <ngx_event_quic_cubic.h>
+#include <ngx_event_quic_bbr.h>
 
 
 static const ngx_quic_cc_algo_t *ngx_quic_cc_get(ngx_quic_connection_t *qc);
@@ -24,6 +25,9 @@ ngx_quic_cc_lookup(ngx_quic_cc_algorithm_e algo)
 
     case NGX_QUIC_CC_RENO:
         return &ngx_quic_cc_reno;
+
+    case NGX_QUIC_CC_BBR:
+        return &ngx_quic_cc_bbr;
 
     case NGX_QUIC_CC_CUBIC:
     default:

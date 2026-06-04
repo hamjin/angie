@@ -31,6 +31,7 @@ static ngx_int_t ngx_http_v3_calculate_ssl_statistic(ngx_connection_t *c,
 static ngx_conf_enum_t  ngx_http_v3_quic_cc[] = {
     { ngx_string("reno"), NGX_QUIC_CC_RENO },
     { ngx_string("cubic"), NGX_QUIC_CC_CUBIC },
+    { ngx_string("bbr"), NGX_QUIC_CC_BBR },
     { ngx_null_string, 0 }
 };
 

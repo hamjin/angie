@@ -1,5 +1,6 @@
 /control_h3_server*
 /h3_client*
+/test_bbr_conf
 /test_cc_perf*
 /forwarder*
 /cc_native.log

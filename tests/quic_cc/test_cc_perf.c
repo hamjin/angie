@@ -26,7 +26,11 @@ typedef struct {
 
 static const cc_algorithm_t algorithms[] = {
     { "reno", "" },
-    { "cubic", "" }
+    { "cubic", "" },
+	{ "bbr", "default" },
+	{ "bbr", "google" },
+	{ "bbr", "sing" },
+	{ "bbr", "hy2" }
 };
 
 
@@ -147,6 +151,16 @@ main(void)
            has_algorithm("reno") ? "ok" : "not ok", n++);
     printf("%s %d - cubic algorithm in cc perf matrix\n",
            has_algorithm("cubic") ? "ok" : "not ok", n++);
+    printf("%s %d - bbr algorithm in cc perf matrix\n",
+           has_algorithm("bbr") ? "ok" : "not ok", n++);
+    printf("%s %d - bbr default profile in cc perf matrix\n",
+           has_profile("bbr", "default") ? "ok" : "not ok", n++);
+    printf("%s %d - bbr google profile in cc perf matrix\n",
+           has_profile("bbr", "google") ? "ok" : "not ok", n++);
+    printf("%s %d - bbr sing profile in cc perf matrix\n",
+           has_profile("bbr", "sing") ? "ok" : "not ok", n++);
+    printf("%s %d - bbr hy2 profile in cc perf matrix\n",
+           has_profile("bbr", "hy2") ? "ok" : "not ok", n++);
 
     printf("%s %d - scenario matrix covers broad network conditions\n",
            scenario_count < 10 ? "not ok" : "ok", n++);
