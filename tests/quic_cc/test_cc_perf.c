@@ -30,7 +30,11 @@ static const cc_algorithm_t algorithms[] = {
 	{ "bbr", "default" },
 	{ "bbr", "google" },
 	{ "bbr", "sing" },
-	{ "bbr", "hy2" }
+	{ "bbr", "hy2" },
+	{ "bbrv3", "default" },
+	{ "bbrv3", "google" },
+	{ "bbrv3", "sing" },
+	{ "bbrv3", "hy2" }
 };
 
 
@@ -137,7 +141,7 @@ main(void)
 
     ntests = 1
              + sizeof(algorithms) / sizeof(algorithms[0])
-             + 1
+             + 1 + 2
              + scenario_count
              + sizeof(metrics) / sizeof(metrics[0]);
 
@@ -161,6 +165,16 @@ main(void)
            has_profile("bbr", "sing") ? "ok" : "not ok", n++);
     printf("%s %d - bbr hy2 profile in cc perf matrix\n",
            has_profile("bbr", "hy2") ? "ok" : "not ok", n++);
+    printf("%s %d - bbrv3 algorithm in cc perf matrix\n",
+           has_algorithm("bbrv3") ? "ok" : "not ok", n++);
+    printf("%s %d - bbrv3 default profile in cc perf matrix\n",
+           has_profile("bbrv3", "default") ? "ok" : "not ok", n++);
+    printf("%s %d - bbrv3 google profile in cc perf matrix\n",
+           has_profile("bbrv3", "google") ? "ok" : "not ok", n++);
+    printf("%s %d - bbrv3 sing profile in cc perf matrix\n",
+           has_profile("bbrv3", "sing") ? "ok" : "not ok", n++);
+    printf("%s %d - bbrv3 hy2 profile in cc perf matrix\n",
+           has_profile("bbrv3", "hy2") ? "ok" : "not ok", n++);
 
     printf("%s %d - scenario matrix covers broad network conditions\n",
            scenario_count < 10 ? "not ok" : "ok", n++);

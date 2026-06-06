@@ -199,6 +199,8 @@ typedef struct {
     uint64_t          undo_inflight_hi;
     uint64_t          alpha_last_delivered;
     uint64_t          alpha_last_delivered_ce;
+    uint64_t          delivered_ce;         /* cumulative CE-marked bytes */
+    uint64_t          last_ce_counter;      /* last ACK_ECN ce counter value */
     ngx_uint_t        bw_probe_up_rounds;
     ngx_uint_t        bw_probe_samples;
     ngx_uint_t        prev_probe_too_high;
@@ -206,6 +208,7 @@ typedef struct {
     ngx_uint_t        rounds_since_probe;
     ngx_uint_t        ack_phase;
     ngx_uint_t        try_fast_path;
+    ngx_uint_t        idle_restart;      /* set when resuming from idle */
     ngx_uint_t        ecn_eligible;
     ngx_uint_t        ecn_alpha;
     ngx_uint_t        ecn_in_round;
@@ -215,6 +218,7 @@ typedef struct {
     ngx_uint_t        loss_round_start;
     ngx_uint_t        init_cwnd;
     ngx_uint_t        initialized;
+    ngx_uint_t        full_bw_now;
     ngx_msec_t        probe_rtt_min_us;
     ngx_msec_t        probe_rtt_min_stamp;
 } ngx_quic_bbr_state_t;
