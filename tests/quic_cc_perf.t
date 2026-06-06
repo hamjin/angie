@@ -74,6 +74,30 @@ my @cases = (
 		path => '/bbr-hy2',
 		body => 'bbr-hy2',
 	},
+	{
+		name => 'bbrv3-default',
+		cc => 'bbr',
+		path => '/bbrv3-default',
+		body => 'bbrv3-default',
+	},
+	{
+		name => 'bbrv3-google',
+		cc => 'bbr',
+		path => '/bbrv3-google',
+		body => 'bbrv3-google',
+	},
+	{
+		name => 'bbrv3-sing',
+		cc => 'bbr',
+		path => '/bbrv3-sing',
+		body => 'bbrv3-sing',
+	},
+	{
+		name => 'bbrv3-hy2',
+		cc => 'bbr',
+		path => '/bbrv3-hy2',
+		body => 'bbrv3-hy2',
+	},
 );
 
 my @source_profiles = (
@@ -316,7 +340,9 @@ sub write_case_config {
 	my $params = '';
 
 	if ($case->{cc} eq 'bbr') {
-		(my $profile = $case->{name}) =~ s/^bbr-//;
+		(my $profile = $case->{name}) =~ s/^bbr(?:v3)?-//;
+		my $version = ($case->{name} =~ /^bbrv3-/) ? 3 : 1;
+		$params .= "    quic_cc_conf version $version;\n" if $version != 1;
 		$params .= "    quic_cc_conf profile $profile;\n";
 	}
 

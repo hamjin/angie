@@ -40,6 +40,25 @@ typedef enum {
 } ngx_quic_bbr_recovery_e;
 
 
+/* BBRv3 PROBE_BW cycle phase */
+typedef enum {
+    BBR_BW_PROBE_UP = 0,
+    BBR_BW_PROBE_DOWN = 1,
+    BBR_BW_PROBE_CRUISE = 2,
+    BBR_BW_PROBE_REFILL = 3
+} ngx_quic_bbr_cycle_phase_e;
+
+
+/* BBRv3 ACK phase */
+typedef enum {
+    BBR_ACKS_INIT = 0,
+    BBR_ACKS_REFILLING,
+    BBR_ACKS_PROBE_STARTING,
+    BBR_ACKS_PROBE_FEEDBACK,
+    BBR_ACKS_PROBE_STOPPING
+} ngx_quic_bbr_ack_phase_e;
+
+
 typedef struct {
     uint64_t    delivered;
     uint64_t    acked;
@@ -47,11 +66,14 @@ typedef struct {
     uint64_t    prior_in_flight;
     uint64_t    bandwidth;
     uint64_t    send_rate;
+    uint64_t    delivered_ce;       /* CE-marked bytes in this ACK */
     uint64_t    packet_number;
     uint64_t    last_sent_packet_number;
     uint64_t    interval;
     uint64_t    prior_delivered_time;
+    uint64_t    lost_packets;
     ngx_uint_t  is_app_limited;
+    ngx_uint_t  is_acking_tlp;
 } bbr_rate_sample_t;
 
 
@@ -135,6 +157,150 @@ static const ngx_uint_t  ngx_quic_bbr_pacing_gain[NGX_QUIC_BBR_CYCLE_LEN] = {
     NGX_QUIC_BBR_UNIT
 };
 
+static const ngx_uint_t  ngx_quic_bbr_v3_pacing_gain[] = {
+    NGX_QUIC_BBR_UNIT * 5 / 4,   /* BBR_BW_PROBE_UP */
+    NGX_QUIC_BBR_UNIT * 3 / 4,   /* BBR_BW_PROBE_DOWN */
+    NGX_QUIC_BBR_UNIT,           /* BBR_BW_PROBE_CRUISE */
+    NGX_QUIC_BBR_UNIT            /* BBR_BW_PROBE_REFILL */
+};
+
+/* BBRv3 PROBE_BW cycle functions and orchestration */
+static void ngx_quic_bbr_v3_advance_max_bw_filter(
+    ngx_quic_congestion_t *cg);
+static uint64_t ngx_quic_bbr_v3_max_bw(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static uint64_t ngx_quic_bbr_v3_bw(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_take_max_bw_sample(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t bw);
+static void ngx_quic_bbr_v3_reset_full_bw(ngx_quic_congestion_t *cg);
+static uint64_t ngx_quic_bbr_v3_target_inflight(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static ngx_uint_t ngx_quic_bbr_v3_is_probing_bandwidth(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_init_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, ngx_uint_t init_bw);
+static void ngx_quic_bbr_v3_loss_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t *bw_out,
+    uint64_t *inflight_out);
+static void ngx_quic_bbr_v3_ecn_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t *inflight_out);
+static void ngx_quic_bbr_v3_adapt_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static uint64_t ngx_quic_bbr_v3_inflight(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t bw, ngx_uint_t gain);
+static uint64_t ngx_quic_bbr_v3_inflight_with_headroom(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_reset_lower_bounds(
+    ngx_quic_congestion_t *cg);
+static void ngx_quic_bbr_v3_reset_congestion_signals(
+    ngx_quic_congestion_t *cg);
+static void ngx_quic_bbr_v3_update_ecn_alpha(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_check_ecn_too_high_in_startup(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+
+
+/* BBRv3 PROBE_BW cycle start functions */
+static ngx_uint_t ngx_quic_bbr_v3_is_reno_coexistence_probe_time(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_pick_probe_wait(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_raise_inflight_hi_slope(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_start_bw_probe_refill(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    ngx_uint_t bw_probe_up_rounds);
+static void ngx_quic_bbr_v3_start_bw_probe_up(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_start_bw_probe_down(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_start_bw_probe_cruise(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+
+/* BBRv3 congestion signal helpers */
+static ngx_uint_t ngx_quic_bbr_v3_is_inflight_too_high(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_handle_inflight_too_high(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_probe_inflight_hi_upward(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+
+/* BBRv3 PROBE_BW cycle orchestration (higher-level) */
+static ngx_uint_t ngx_quic_bbr_v3_check_time_to_probe_bw(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static ngx_uint_t ngx_quic_bbr_v3_check_time_to_cruise(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    uint64_t inflight, uint64_t bw);
+static void ngx_quic_bbr_v3_adapt_upper_bounds(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void
+ngx_quic_bbr_v3_update_cycle_phase(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample);
+
+/* BBRv3 model update and control */
+static void ngx_quic_bbr_v3_calculate_bw_sample(ngx_quic_congestion_t *cg,
+    bbr_rate_sample_t *sample);
+static uint64_t ngx_quic_bbr_v3_update_round_start(ngx_quic_congestion_t *cg,
+    ngx_quic_frame_t *f, bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_update_ack_aggregation(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_check_full_bw_reached(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    uint64_t ctx_sample_bw);
+static void ngx_quic_bbr_v3_check_loss_too_high_in_startup(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+
+static void ngx_quic_bbr_v3_check_drain(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_update_min_rtt(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, ngx_quic_connection_t *qc);
+static uint64_t ngx_quic_bbr_v3_probe_rtt_cwnd(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_check_probe_rtt_done(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_handle_queue_too_high_in_startup(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_exit_probe_rtt(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_update_gains(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_set_pacing_rate(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf);
+static void ngx_quic_bbr_v3_set_cwnd(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_update_model(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    uint64_t ctx_sample_bw, ngx_quic_connection_t *qc);
+static uint64_t ngx_quic_bbr_v3_quantize(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t cwnd);
+static uint64_t ngx_quic_bbr_v3_ack_aggregation_cwnd(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf);
+static ngx_uint_t ngx_quic_bbr_v3_run_fast_path(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    ngx_uint_t *update_model);
+static void ngx_quic_bbr_v3_update_congestion_signals(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_update_latest_delivery_signals(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+static void ngx_quic_bbr_v3_advance_latest_delivery_signals(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample);
+
+/* BBRv3 callback entry functions (version=3 dispatch targets) */
+static void ngx_quic_bbr_v3_reset(ngx_quic_connection_t *qc);
+static void ngx_quic_bbr_v3_ack(ngx_connection_t *c, ngx_quic_frame_t *f);
+static void ngx_quic_bbr_v3_lost(ngx_connection_t *c, ngx_quic_frame_t *f);
+static void ngx_quic_bbr_v3_idle(ngx_connection_t *c, ngx_uint_t idle);
+static void ngx_quic_bbr_v3_persistent_congestion(ngx_connection_t *c);
 
 static ngx_conf_enum_t  ngx_quic_bbr_profile[] = {
     { ngx_string("default"), NGX_QUIC_BBR_PROFILE_DEFAULT },
@@ -147,6 +313,7 @@ static ngx_conf_enum_t  ngx_quic_bbr_profile[] = {
 
 static ngx_conf_enum_t  ngx_quic_bbr_versions[] = {
     { ngx_string("1"), 1 },
+    { ngx_string("3"), 3 },
     { ngx_null_string, 0 }
 };
 
@@ -385,30 +552,31 @@ ngx_quic_bbr_init_conf(void *data)
     conf->exit_startup_on_loss_even_if_app_limited = 0;
     conf->reduce_extra_acked_on_bandwidth_increase = 0;
 
-    conf->startup_pacing_gain = NGX_CONF_UNSET;
-    conf->beta = NGX_CONF_UNSET;
-    conf->loss_thresh = NGX_CONF_UNSET;
-    conf->ecn_factor = NGX_CONF_UNSET;
-    conf->ecn_thresh = NGX_CONF_UNSET;
-    conf->ecn_alpha_gain = NGX_CONF_UNSET;
-    conf->ecn_alpha_init = NGX_CONF_UNSET;
-    conf->ecn_max_rtt_us = NGX_CONF_UNSET;
-    conf->ecn_reprobe_gain = NGX_CONF_UNSET;
-    conf->full_loss_cnt = NGX_CONF_UNSET;
-    conf->full_ecn_cnt = NGX_CONF_UNSET;
-    conf->inflight_headroom = NGX_CONF_UNSET;
-    conf->bw_probe_max_rounds = NGX_CONF_UNSET;
-    conf->bw_probe_rand_rounds = NGX_CONF_UNSET;
-    conf->bw_probe_base_us = NGX_CONF_UNSET;
-    conf->bw_probe_rand_us = NGX_CONF_UNSET;
-    conf->bw_probe_cwnd_gain = NGX_CONF_UNSET;
-    conf->probe_rtt_win_ms = NGX_CONF_UNSET;
-    conf->probe_rtt_cwnd_gain = NGX_CONF_UNSET;
-    conf->tso_rtt_shift = NGX_CONF_UNSET;
-    conf->fast_path = NGX_CONF_UNSET;
-    conf->fast_ack_mode = NGX_CONF_UNSET;
-    conf->precise_ece_ack = NGX_CONF_UNSET;
-    conf->loss_probe_recovery = NGX_CONF_UNSET;
+    /* v3 parameters — defaults from tcp_bbr.c static const */
+    conf->startup_pacing_gain = NGX_QUIC_BBR_UNIT * 277 / 100 + 1;
+    conf->beta = NGX_QUIC_BBR_UNIT * 30 / 100;
+    conf->loss_thresh = NGX_QUIC_BBR_UNIT * 2 / 100;
+    conf->ecn_factor = NGX_QUIC_BBR_UNIT * 1 / 3;
+    conf->ecn_thresh = NGX_QUIC_BBR_UNIT * 1 / 2;
+    conf->ecn_alpha_gain = NGX_QUIC_BBR_UNIT * 1 / 16;
+    conf->ecn_alpha_init = NGX_QUIC_BBR_UNIT;
+    conf->ecn_max_rtt_us = 5000;
+    conf->ecn_reprobe_gain = NGX_QUIC_BBR_UNIT * 1 / 2;
+    conf->full_loss_cnt = 6;
+    conf->full_ecn_cnt = 2;
+    conf->inflight_headroom = NGX_QUIC_BBR_UNIT * 15 / 100;
+    conf->bw_probe_max_rounds = 63;
+    conf->bw_probe_rand_rounds = 2;
+    conf->bw_probe_base_us = 2000000;
+    conf->bw_probe_rand_us = 1000000;
+    conf->bw_probe_cwnd_gain = 1;
+    conf->probe_rtt_win_ms = 5000;
+    conf->probe_rtt_cwnd_gain = NGX_QUIC_BBR_UNIT * 1 / 2;
+    conf->tso_rtt_shift = 9;
+    conf->fast_path = 1;
+    conf->fast_ack_mode = 1;
+    conf->precise_ece_ack = 1;
+    conf->loss_probe_recovery = 1;
 }
 
 
@@ -639,6 +807,18 @@ bbr_normalize_conf(ngx_quic_bbr_conf_t *conf)
         conf->startup_cwnd_gain = NGX_QUIC_BBR_UNIT * 2;
         conf->drain_gain = NGX_QUIC_BBR_UNIT / 2;
     }
+
+    /* v3-specific: fix-up inherited v1 params that harm v3 algorithm.
+       init_conf already sets all v3 defaults matching tcp_bbr.c. */
+    if (conf->version == 3) {
+        if (conf->ack_epoch_acked_reset_thresh == 0) {
+            conf->ack_epoch_acked_reset_thresh = 1 << 20;
+        }
+
+        if (conf->extra_acked_max_us == 0) {
+            conf->extra_acked_max_us = 100 * 1000;
+        }
+    }
 }
 
 
@@ -649,6 +829,13 @@ ngx_quic_bbr_reset(ngx_quic_connection_t *qc)
     ngx_quic_congestion_t        *cg;
     ngx_quic_bbr_state_t         *state;
     const ngx_quic_bbr_conf_t   *conf;
+
+    conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+    if (conf->version == 3) {
+        ngx_quic_bbr_v3_reset(qc);
+        return;
+    }
 
     cg = &qc->congestion;
 
@@ -663,8 +850,6 @@ ngx_quic_bbr_reset(ngx_quic_connection_t *qc)
     ngx_memzero(cg->cc_priv, sizeof(ngx_quic_bbr_state_t));
     state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
     state->base.type = NGX_QUIC_CC_BBR;
-
-    conf = (ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
 
     state->version = conf->version;
 
@@ -744,6 +929,12 @@ ngx_quic_bbr_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
     state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->version == 3) {
+        ngx_quic_bbr_v3_ack(c, f);
+        return;
+    }
+
     conf = ngx_quic_bbr_conf(c);
 
     ngx_quic_bbr_rate_sample(cg, f, &sample);
@@ -784,6 +975,12 @@ ngx_quic_bbr_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
     state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->version == 3) {
+        ngx_quic_bbr_v3_lost(c, f);
+        return;
+    }
+
     conf = ngx_quic_bbr_conf(c);
 
     state->lost += f->plen;
@@ -844,7 +1041,13 @@ ngx_quic_bbr_idle(ngx_connection_t *c, ngx_uint_t idle)
 
     if (!idle) {
         state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
-        conf = (ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+        if (state->version == 3) {
+            ngx_quic_bbr_v3_idle(c, idle);
+            return;
+        }
+
+        conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
 
         state->ack_epoch_stamp = ngx_current_msec;
         state->ack_epoch_acked = 0;
@@ -880,6 +1083,12 @@ ngx_quic_bbr_persistent_congestion(ngx_connection_t *c)
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
     state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->version == 3) {
+        ngx_quic_bbr_v3_persistent_congestion(c);
+        return;
+    }
+
     conf = ngx_quic_bbr_conf(c);
 
     state->full_bw = 0;
@@ -1956,3 +2165,1856 @@ ngx_quic_bbr_set_pacing_timer(ngx_quic_connection_t *qc,
     }
 }
 
+
+/* BBRv3 bandwidth/congestion model -- faithful ports of tcp_bbr.c */
+
+/*
+ * Return the windowed max recent bandwidth sample.
+ * Matches tcp_bbr.c: bbr_max_bw() -> max(bbr->bw_hi[0], bbr->bw_hi[1])
+ */
+static uint64_t
+ngx_quic_bbr_v3_max_bw(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    return ngx_max(state->bw_hi[0], state->bw_hi[1]);
+}
+
+
+/*
+ * Return the estimated bandwidth of the path.
+ * Matches tcp_bbr.c: bbr_bw() -> min(bbr_max_bw(sk), bbr->bw_lo)
+ * Note: bw_lo defaults to ~0ULL (no constraint), so min naturally returns max_bw.
+ */
+static uint64_t
+ngx_quic_bbr_v3_bw(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    return ngx_min(ngx_quic_bbr_v3_max_bw(cg, conf), state->bw_lo);
+}
+
+
+/*
+ * Incorporate a new bw sample into the current window of the max filter.
+ * Matches tcp_bbr.c: bbr_take_max_bw_sample() -> bbr->bw_hi[1] = max(bw, bbr->bw_hi[1])
+ */
+static void
+ngx_quic_bbr_v3_take_max_bw_sample(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t bw)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->bw_hi[1] = ngx_max(bw, state->bw_hi[1]);
+}
+
+
+/*
+ * Keep max of last 1-2 cycles. Each PROBE_BW cycle, flip filter window.
+ * Matches tcp_bbr.c: bbr_advance_max_bw_filter()
+ */
+static void
+ngx_quic_bbr_v3_advance_max_bw_filter(ngx_quic_congestion_t *cg)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (!state->bw_hi[1]) {
+        return;  /* no samples in this window; remember old window */
+    }
+
+    state->bw_hi[0] = state->bw_hi[1];
+    state->bw_hi[1] = 0;
+}
+
+
+/*
+ * Reset the estimator for reaching full bandwidth based on bw plateau.
+ * Matches tcp_bbr.c: bbr_reset_full_bw()
+ */
+static void
+ngx_quic_bbr_v3_reset_full_bw(ngx_quic_congestion_t *cg)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->full_bw = 0;
+    state->full_bw_cnt = 0;
+    state->full_bw_now = 0;
+}
+
+
+/*
+ * How much do we want in flight? Our BDP, unless congestion cut cwnd.
+ * Matches tcp_bbr.c: bbr_target_inflight() -> min(bbr_inflight(sk, bbr_bw(sk), BBR_UNIT), snd_cwnd)
+ */
+static uint64_t
+ngx_quic_bbr_v3_target_inflight(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    uint64_t               bdp;
+
+    bdp = ngx_quic_bbr_v3_inflight(cg, conf,
+              ngx_quic_bbr_v3_bw(cg, conf), NGX_QUIC_BBR_UNIT);
+
+    return ngx_min(bdp, (uint64_t) cg->window);
+}
+
+
+/*
+ * Are we probing bandwidth (STARTUP, or PROBE_BW REFILL/UP)?
+ * Matches tcp_bbr.c: bbr_is_probing_bandwidth()
+ */
+static ngx_uint_t
+ngx_quic_bbr_v3_is_probing_bandwidth(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    return (state->mode == BBR_STARTUP)
+        || (state->mode == BBR_PROBE_BW
+            && (state->cycle_idx == BBR_BW_PROBE_REFILL
+                || state->cycle_idx == BBR_BW_PROBE_UP));
+}
+
+
+static uint64_t
+ngx_quic_bbr_v3_inflight(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t bw, ngx_uint_t gain)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               bdp;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (bw == 0) {
+        return (uint64_t) conf->initial_cwnd_packets * cg->mtu;
+    }
+
+    bdp = bw * ngx_max(state->min_rtt, (ngx_msec_t) 1) / 1000;
+    bdp = (bdp * gain + NGX_QUIC_BBR_UNIT - 1) / NGX_QUIC_BBR_UNIT;
+
+    return ngx_max(bdp, (uint64_t) conf->cwnd_min_target * cg->mtu);
+}
+
+
+/*
+ * With pacing at lower layers, there's often less data "in the network" than
+ * "in flight". Return inflight_hi minus headroom for fairness headroom.
+ * Matches tcp_bbr.c: bbr_inflight_with_headroom()
+ */
+static uint64_t
+ngx_quic_bbr_v3_inflight_with_headroom(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               headroom;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->inflight_hi == ~0ULL) {
+        return ~0ULL;
+    }
+
+    headroom = state->inflight_hi * (uint64_t) conf->inflight_headroom
+               / NGX_QUIC_BBR_UNIT;
+    headroom = ngx_max(headroom, (uint64_t) 1);
+
+    return ngx_max(state->inflight_hi - headroom,
+                   (uint64_t) conf->cwnd_min_target * cg->mtu);
+}
+
+
+/*
+ * Init lower bounds if not inited yet.
+ * Matches tcp_bbr.c: bbr_init_lower_bounds()
+ */
+static void
+ngx_quic_bbr_v3_init_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, ngx_uint_t init_bw)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (init_bw && state->bw_lo == ~0ULL) {
+        state->bw_lo = ngx_quic_bbr_v3_max_bw(cg, conf);
+    }
+
+    if (state->inflight_lo == ~0ULL) {
+        state->inflight_lo = state->congestion_window;
+    }
+}
+
+
+/*
+ * Reduce bw and inflight to (1 - beta).
+ * Matches tcp_bbr.c: bbr_loss_lower_bounds()
+ */
+static void
+ngx_quic_bbr_v3_loss_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t *bw_out,
+    uint64_t *inflight_out)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               loss_cut;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    loss_cut = NGX_QUIC_BBR_UNIT - (uint64_t) conf->beta;
+
+    *bw_out = ngx_max(state->bw_latest,
+                       state->bw_lo * loss_cut / NGX_QUIC_BBR_UNIT);
+    *inflight_out = ngx_max(state->inflight_latest,
+                             state->inflight_lo * loss_cut / NGX_QUIC_BBR_UNIT);
+}
+
+
+/*
+ * How should we multiplicatively cut inflight limits based on ECN?
+ * Matches tcp_bbr.c: bbr_ecn_cut() and bbr_ecn_lower_bounds()
+ */
+static void
+ngx_quic_bbr_v3_ecn_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t *inflight_out)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               ecn_cut;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    ecn_cut = NGX_QUIC_BBR_UNIT
+              - (state->ecn_alpha * (uint64_t) conf->ecn_factor
+                 / NGX_QUIC_BBR_UNIT);
+
+    *inflight_out = state->inflight_lo * ecn_cut / NGX_QUIC_BBR_UNIT;
+}
+
+
+/*
+ * Estimate a short-term lower bound on capacity. When not probing bw and
+ * seeing loss/ECN, cut bw_lo and inflight_lo multiplicatively.
+ * Matches tcp_bbr.c: bbr_adapt_lower_bounds()
+ */
+static void
+ngx_quic_bbr_v3_adapt_lower_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               ecn_inflight_lo;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    /* We only use lower-bound estimates when not probing bw. */
+    if (ngx_quic_bbr_v3_is_probing_bandwidth(cg, conf)) {
+        return;
+    }
+
+    ecn_inflight_lo = ~0ULL;
+
+    /* ECN response */
+    if (state->ecn_in_round && conf->ecn_factor) {
+        ngx_quic_bbr_v3_init_lower_bounds(cg, conf, 0);
+        ngx_quic_bbr_v3_ecn_lower_bounds(cg, conf, &ecn_inflight_lo);
+    }
+
+    /* Loss response */
+    if (state->loss_in_round) {
+        ngx_quic_bbr_v3_init_lower_bounds(cg, conf, 1);
+        ngx_quic_bbr_v3_loss_lower_bounds(cg, conf,
+                                            &state->bw_lo,
+                                            &state->inflight_lo);
+    }
+
+    /* Adjust to the lower of the levels implied by loss/ECN */
+    state->inflight_lo = ngx_min(state->inflight_lo, ecn_inflight_lo);
+    state->bw_lo = ngx_max((uint64_t) 1, state->bw_lo);
+}
+
+
+/*
+ * Reset any short-term lower-bound adaptation to congestion.
+ * Matches tcp_bbr.c: bbr_reset_lower_bounds()
+ */
+static void
+ngx_quic_bbr_v3_reset_lower_bounds(ngx_quic_congestion_t *cg)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->bw_lo = ~0ULL;
+    state->inflight_lo = ~0ULL;
+}
+
+
+/*
+ * After bw probing (STARTUP/PROBE_UP), reset signals before entering a
+ * state machine phase where we adapt our lower bound based on congestion.
+ * Matches tcp_bbr.c: bbr_reset_congestion_signals()
+ */
+static void
+ngx_quic_bbr_v3_reset_congestion_signals(ngx_quic_congestion_t *cg)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->loss_in_round = 0;
+    state->ecn_in_round = 0;
+    state->loss_in_cycle = 0;
+    state->ecn_in_cycle = 0;
+    state->bw_latest = 0;
+    state->inflight_latest = 0;
+}
+
+
+/*
+ * Update ecn_alpha as EWMA of CE/delivered ratio.
+ * Matches tcp_bbr.c: bbr_update_ecn_alpha()
+ */
+static void
+ngx_quic_bbr_v3_update_ecn_alpha(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               delivered, delivered_ce, alpha, ce_ratio;
+    ngx_uint_t             gain;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (!state->ecn_eligible || conf->ecn_factor == 0) {
+        return;
+    }
+
+    delivered = state->delivered - state->alpha_last_delivered;
+    delivered_ce = state->delivered_ce - state->alpha_last_delivered_ce;
+
+    if (delivered == 0) {
+        return;
+    }
+
+    ce_ratio = (delivered_ce << NGX_QUIC_BBR_SCALE) / delivered;
+
+    gain = (ngx_uint_t) conf->ecn_alpha_gain;
+    alpha = ((NGX_QUIC_BBR_UNIT - gain) * state->ecn_alpha)
+            >> NGX_QUIC_BBR_SCALE;
+    alpha += (gain * ce_ratio) >> NGX_QUIC_BBR_SCALE;
+    state->ecn_alpha = ngx_min(alpha, (uint64_t) NGX_QUIC_BBR_UNIT);
+
+    state->alpha_last_delivered = state->delivered;
+    state->alpha_last_delivered_ce = state->delivered_ce;
+}
+
+
+/*
+ * Exit STARTUP upon N consecutive rounds with ECN mark rate > ecn_thresh.
+ * Matches tcp_bbr.c: bbr_check_ecn_too_high_in_startup()
+ */
+static void
+ngx_quic_bbr_v3_check_ecn_too_high_in_startup(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               ce_ratio;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->full_bw_reached || !state->ecn_eligible
+        || conf->full_ecn_cnt == 0 || conf->ecn_thresh == 0)
+    {
+        return;
+    }
+
+    if (state->delivered == 0) {
+        return;
+    }
+
+    ce_ratio = (state->delivered_ce << NGX_QUIC_BBR_SCALE)
+               / state->delivered;
+
+    if (ce_ratio >= (uint64_t) conf->ecn_thresh) {
+        state->startup_ecn_rounds++;
+    } else {
+        state->startup_ecn_rounds = 0;
+    }
+
+    if (state->startup_ecn_rounds >= (ngx_uint_t) conf->full_ecn_cnt) {
+        state->full_bw_reached = 1;
+        state->inflight_hi = ngx_max(
+            ngx_quic_bbr_v3_inflight(cg, conf,
+                                      ngx_quic_bbr_v3_max_bw(cg, conf),
+                                      NGX_QUIC_BBR_UNIT),
+            state->inflight_latest);
+    }
+}
+
+static void
+ngx_quic_bbr_v3_start_bw_probe_down(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    ngx_quic_bbr_v3_reset_congestion_signals(cg);
+    state->bw_probe_up_cnt = ~0ULL;
+    ngx_quic_bbr_v3_pick_probe_wait(cg, conf);
+    state->cycle_stamp = ngx_current_msec;
+    state->ack_phase = BBR_ACKS_PROBE_STOPPING;
+    state->next_round_delivered = state->delivered;
+    state->cycle_idx = BBR_BW_PROBE_DOWN;
+}
+
+
+static ngx_uint_t
+ngx_quic_bbr_v3_is_inflight_too_high(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               loss_thresh_val;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (sample->lost_packets > 0 && sample->prior_in_flight > 0) {
+        loss_thresh_val = sample->prior_in_flight
+                          * (uint64_t) conf->loss_thresh
+                          / NGX_QUIC_BBR_UNIT;
+
+        if (sample->lost_packets > loss_thresh_val) {
+            return 1;
+        }
+    }
+
+    /* ECN check */
+    if (sample->delivered_ce > 0 && sample->delivered > 0
+        && state->ecn_eligible && conf->ecn_thresh > 0)
+    {
+        uint64_t  ecn_thresh_val;
+
+        ecn_thresh_val = sample->delivered
+                         * (uint64_t) conf->ecn_thresh
+                         / NGX_QUIC_BBR_UNIT;
+
+        if (sample->delivered_ce > ecn_thresh_val) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
+static void
+ngx_quic_bbr_v3_handle_inflight_too_high(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               target;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->prev_probe_too_high = 1;
+    state->bw_probe_samples = 0;
+
+    if (!sample->is_app_limited) {
+        target = ngx_quic_bbr_v3_target_inflight(cg, conf);
+        state->inflight_hi = ngx_max(sample->prior_in_flight,
+            target * (NGX_QUIC_BBR_UNIT - (uint64_t) conf->beta)
+                     / NGX_QUIC_BBR_UNIT);
+    }
+
+    if (state->mode == BBR_PROBE_BW
+        && state->cycle_idx == BBR_BW_PROBE_UP)
+    {
+        ngx_quic_bbr_v3_start_bw_probe_down(cg, conf);
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_probe_inflight_hi_upward(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               delta;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->congestion_window < state->inflight_hi) {
+        return;
+    }
+
+    state->bw_probe_up_acks += sample->acked;
+
+    if (state->bw_probe_up_acks >= state->bw_probe_up_cnt) {
+        delta = state->bw_probe_up_acks / state->bw_probe_up_cnt;
+        state->bw_probe_up_acks -= delta * state->bw_probe_up_cnt;
+        state->inflight_hi += delta;
+        state->try_fast_path = 0;
+    }
+
+    if (state->round_start) {
+        ngx_quic_bbr_v3_raise_inflight_hi_slope(cg, conf);
+    }
+}
+
+
+static ngx_uint_t
+ngx_quic_bbr_v3_is_reno_coexistence_probe_time(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               target;
+    uint32_t               rounds;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    target = ngx_quic_bbr_v3_inflight(cg, conf,
+                 ngx_quic_bbr_v3_bw(cg, conf), NGX_QUIC_BBR_UNIT)
+             / cg->mtu;
+    rounds = (uint32_t) ngx_min((uint64_t) conf->bw_probe_max_rounds, target);
+
+    return state->rounds_since_probe >= rounds;
+}
+
+
+static void
+ngx_quic_bbr_v3_pick_probe_wait(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->rounds_since_probe = (ngx_uint_t) (ngx_random()
+        % (ngx_uint_t) conf->bw_probe_rand_rounds);
+    state->probe_wait_us = (uint64_t) conf->bw_probe_base_us
+        + (uint64_t) (ngx_random()
+                      % (ngx_uint_t) conf->bw_probe_rand_us);
+}
+
+
+static void
+ngx_quic_bbr_v3_raise_inflight_hi_slope(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               growth, cnt;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    growth = 1ULL << state->bw_probe_up_rounds;
+    state->bw_probe_up_rounds = ngx_min(state->bw_probe_up_rounds + 1, 30);
+    cnt = state->congestion_window / cg->mtu / growth;
+    cnt = ngx_max(cnt, 1ULL);
+    state->bw_probe_up_cnt = cnt;
+    state->bw_probe_up_acks = 0;
+}
+
+
+static void
+ngx_quic_bbr_v3_start_bw_probe_refill(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, ngx_uint_t bw_probe_up_rounds)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    ngx_quic_bbr_v3_reset_lower_bounds(cg);
+    state->bw_probe_up_rounds = bw_probe_up_rounds;
+    state->bw_probe_up_acks = 0;
+    state->stopped_risky_probe = 0;
+    state->ack_phase = BBR_ACKS_REFILLING;
+    state->next_round_delivered = state->delivered;
+    state->cycle_idx = BBR_BW_PROBE_REFILL;
+    state->try_fast_path = 0;
+}
+
+
+static void
+ngx_quic_bbr_v3_start_bw_probe_up(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->ack_phase = BBR_ACKS_PROBE_STARTING;
+    state->next_round_delivered = state->delivered;
+    state->cycle_stamp = ngx_current_msec;
+    ngx_quic_bbr_v3_reset_full_bw(cg);
+    state->full_bw = sample->bandwidth;
+    state->cycle_idx = BBR_BW_PROBE_UP;
+    ngx_quic_bbr_v3_raise_inflight_hi_slope(cg, conf);
+}
+
+
+static void
+ngx_quic_bbr_v3_start_bw_probe_cruise(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->inflight_lo != ~0ULL) {
+        state->inflight_lo = ngx_min(state->inflight_lo, state->inflight_hi);
+    }
+
+    state->cycle_idx = BBR_BW_PROBE_CRUISE;
+    state->try_fast_path = 0;
+}
+
+
+/* BBRv3 PROBE_BW cycle orchestration -- higher-level entry points */
+
+static ngx_uint_t
+ngx_quic_bbr_v3_check_time_to_probe_bw(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    ngx_msec_t             now;
+    uint64_t               reprobe;
+    ngx_uint_t             n;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    /* ECN-based reprobe */
+    if (conf->ecn_reprobe_gain > 0
+        && state->ecn_eligible
+        && state->ecn_in_cycle
+        && !state->loss_in_cycle)
+    {
+        reprobe = state->inflight_hi
+                  * (uint64_t) conf->ecn_reprobe_gain
+                  / NGX_QUIC_BBR_UNIT;
+
+        n = 0;
+        while ((1ULL << n) < reprobe && n < 30) {
+            n++;
+        }
+
+        ngx_quic_bbr_v3_start_bw_probe_refill(cg, conf, n);
+        return 1;
+    }
+
+    /* Timer-based or Reno-coexistence probe */
+    now = ngx_current_msec;
+
+    if (now - state->cycle_stamp
+            > (ngx_msec_t) (state->probe_wait_us / 1000)
+        || ngx_quic_bbr_v3_is_reno_coexistence_probe_time(cg, conf))
+    {
+        ngx_quic_bbr_v3_start_bw_probe_refill(cg, conf, 0);
+        return 1;
+    }
+
+    return 0;
+}
+
+
+static ngx_uint_t
+ngx_quic_bbr_v3_check_time_to_cruise(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t inflight, uint64_t bw)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    (void) state;
+
+    if (inflight > ngx_quic_bbr_v3_inflight_with_headroom(cg, conf)) {
+        return 0;
+    }
+
+    return inflight <= ngx_quic_bbr_v3_inflight(cg, conf, bw,
+                                                   NGX_QUIC_BBR_UNIT);
+}
+
+
+static void
+ngx_quic_bbr_v3_adapt_upper_bounds(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->ack_phase == BBR_ACKS_PROBE_STARTING
+        && state->round_start)
+    {
+        state->ack_phase = BBR_ACKS_PROBE_FEEDBACK;
+    }
+
+    if (state->ack_phase == BBR_ACKS_PROBE_STOPPING
+        && state->round_start)
+    {
+        state->bw_probe_samples = 0;
+        state->ack_phase = BBR_ACKS_INIT;
+
+        if (state->mode == BBR_PROBE_BW && !sample->is_app_limited) {
+            ngx_quic_bbr_v3_advance_max_bw_filter(cg);
+        }
+
+        if (state->mode == BBR_PROBE_BW
+            && state->stopped_risky_probe
+            && !state->prev_probe_too_high)
+        {
+            ngx_quic_bbr_v3_start_bw_probe_refill(cg, conf, 0);
+            return;
+        }
+    }
+
+    if (ngx_quic_bbr_v3_is_inflight_too_high(cg, conf, sample)) {
+        if (state->bw_probe_samples) {
+            ngx_quic_bbr_v3_handle_inflight_too_high(cg, conf, sample);
+        }
+
+    } else {
+        if (state->inflight_hi != ~0ULL) {
+            if (sample->prior_in_flight > state->inflight_hi) {
+                state->inflight_hi = sample->prior_in_flight;
+            }
+
+            if (state->mode == BBR_PROBE_BW
+                && state->cycle_idx == BBR_BW_PROBE_UP)
+            {
+                ngx_quic_bbr_v3_probe_inflight_hi_upward(cg, conf, sample);
+            }
+        }
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_update_cycle_phase(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               inflight;
+    uint64_t               bw;
+    ngx_uint_t             is_bw_probe_done;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (!state->full_bw_reached) {
+        return;
+    }
+
+    ngx_quic_bbr_v3_adapt_upper_bounds(cg, conf, sample);
+
+    /* adapt_upper_bounds may change mode; re-read */
+    if (state->mode != BBR_PROBE_BW) {
+        return;
+    }
+
+    inflight = cg->in_flight;
+    bw = ngx_quic_bbr_v3_max_bw(cg, conf);
+
+    switch (state->cycle_idx) {
+
+    case BBR_BW_PROBE_CRUISE:
+        if (ngx_quic_bbr_v3_check_time_to_probe_bw(cg, conf)) {
+            return;
+        }
+        break;
+
+    case BBR_BW_PROBE_REFILL:
+        if (state->round_start) {
+            state->bw_probe_samples = 1;
+            ngx_quic_bbr_v3_start_bw_probe_up(cg, conf, sample);
+        }
+        break;
+
+    case BBR_BW_PROBE_UP:
+        is_bw_probe_done = 0;
+
+        if (state->prev_probe_too_high
+            && inflight >= state->inflight_hi)
+        {
+            state->stopped_risky_probe = 1;
+            is_bw_probe_done = 1;
+
+        } else if (state->full_bw_now) {
+            is_bw_probe_done = 1;
+
+        } else if (state->congestion_window >= state->inflight_hi) {
+            state->full_bw = sample->bandwidth;
+            state->full_bw_cnt = 0;
+        }
+
+        if (is_bw_probe_done) {
+            state->prev_probe_too_high = 0;
+            ngx_quic_bbr_v3_start_bw_probe_down(cg, conf);
+        }
+        break;
+
+    case BBR_BW_PROBE_DOWN:
+        if (ngx_quic_bbr_v3_check_time_to_probe_bw(cg, conf)) {
+            return;
+        }
+
+        if (ngx_quic_bbr_v3_check_time_to_cruise(cg, conf, inflight, bw))
+        {
+            ngx_quic_bbr_v3_start_bw_probe_cruise(cg, conf);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+
+/* BBRv3 model update and control functions */
+
+
+static void
+ngx_quic_bbr_v3_calculate_bw_sample(ngx_quic_congestion_t *cg,
+    bbr_rate_sample_t *sample)
+{
+    sample->bandwidth = 0;
+
+    if (sample->interval > 0 && sample->delivered > 0) {
+        sample->bandwidth = sample->delivered * 1000 / sample->interval;
+    }
+}
+
+
+static uint64_t
+ngx_quic_bbr_v3_update_round_start(ngx_quic_congestion_t *cg,
+    ngx_quic_frame_t *f, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               round_delivered;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    (void) f;
+
+    round_delivered = 0;
+    state->round_start = 0;
+
+    if (sample->interval > 0
+        && sample->prior_delivered >= state->next_round_delivered)
+    {
+        round_delivered = state->delivered - state->next_round_delivered;
+        state->next_round_delivered = state->delivered;
+        state->round_start = 1;
+    }
+
+    return round_delivered;
+}
+
+
+static void
+ngx_quic_bbr_v3_update_ack_aggregation(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               elapsed, bw, expected, extra;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (conf->extra_acked_gain == 0 || sample->acked == 0
+        || sample->delivered == 0 || sample->interval == 0)
+    {
+        return;
+    }
+
+    if (state->round_start) {
+        state->extra_acked_win_rtts = ngx_min((ngx_uint_t) 0x1F,
+                                        state->extra_acked_win_rtts + 1);
+
+        if (state->extra_acked_win_rtts
+            >= (ngx_uint_t) conf->extra_acked_win_rtts)
+        {
+            state->extra_acked_win_rtts = 0;
+            state->extra_acked_win_idx ^= 1;
+            state->extra_acked[state->extra_acked_win_idx] = 0;
+        }
+    }
+
+    elapsed = state->delivered_time - state->ack_epoch_stamp;
+    bw = ngx_quic_bbr_v3_bw(cg, conf);
+    expected = bw * elapsed / 1000;
+
+    if (state->ack_epoch_acked <= expected
+        || (conf->ack_epoch_acked_reset_thresh > 0
+            && state->ack_epoch_acked + sample->acked
+               >= (uint64_t) conf->ack_epoch_acked_reset_thresh * cg->mtu))
+    {
+        state->ack_epoch_acked = 0;
+        state->ack_epoch_stamp = state->delivered_time;
+        expected = 0;
+    }
+
+    state->ack_epoch_acked += sample->acked;
+    extra = state->ack_epoch_acked - expected;
+    extra = ngx_min(extra, (uint64_t) state->congestion_window);
+
+    if (extra > state->extra_acked[state->extra_acked_win_idx]) {
+        state->extra_acked[state->extra_acked_win_idx] = extra;
+    }
+}
+
+
+/*
+ * Check if we've reached full bandwidth in STARTUP.
+ * Matches tcp_bbr.c: bbr_check_full_bw_reached()
+ *
+ * Uses ctx_sample_bw (the bandwidth from the current rate sample, i.e.
+ * ctx->sample_bw in the kernel) rather than sample->bandwidth directly.
+ */
+static void
+ngx_quic_bbr_v3_check_full_bw_reached(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    uint64_t ctx_sample_bw)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               bw_thresh;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    (void) sample;
+
+    if (state->full_bw_now || sample->is_app_limited) {
+        return;
+    }
+
+    bw_thresh = state->full_bw * (uint64_t) conf->full_bw_thresh
+                / NGX_QUIC_BBR_UNIT;
+
+    if (ctx_sample_bw >= bw_thresh) {
+        ngx_quic_bbr_v3_reset_full_bw(cg);
+        state->full_bw = ctx_sample_bw;
+        return;
+    }
+
+    if (!state->round_start) {
+        return;
+    }
+
+    state->full_bw_cnt++;
+    state->full_bw_now = (state->full_bw_cnt
+                          >= (ngx_uint_t) conf->full_bw_cnt);
+    state->full_bw_reached |= state->full_bw_now;
+}
+
+
+/*
+ * Handle the case where queue is too high in STARTUP: mark full_bw_reached
+ * and set inflight_hi to protect the network.
+ * Matches tcp_bbr.c: bbr_handle_queue_too_high_in_startup()
+ */
+static void
+ngx_quic_bbr_v3_handle_queue_too_high_in_startup(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               bdp;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->full_bw_reached = 1;
+
+    bdp = ngx_quic_bbr_v3_inflight(cg, conf,
+              ngx_quic_bbr_v3_max_bw(cg, conf), NGX_QUIC_BBR_UNIT);
+    state->inflight_hi = ngx_max(bdp, state->inflight_latest);
+}
+
+
+/*
+ * Check if loss is too high during STARTUP. If so, declare full bandwidth
+ * reached and cap inflight.
+ * Matches tcp_bbr.c: bbr_check_loss_too_high_in_startup()
+ */
+static void
+ngx_quic_bbr_v3_check_loss_too_high_in_startup(
+    ngx_quic_congestion_t *cg, const ngx_quic_bbr_conf_t *conf,
+    bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->full_bw_reached) {
+        return;
+    }
+
+    if (sample->lost_packets > 0
+        && state->loss_events_in_round < 0xf)
+    {
+        state->loss_events_in_round++;
+    }
+
+    if (conf->full_loss_cnt > 0
+        && state->loss_round_start
+        && state->loss_events_in_round
+           >= (ngx_uint_t) conf->full_loss_cnt
+        && ngx_quic_bbr_v3_is_inflight_too_high(cg, conf, sample))
+    {
+        ngx_quic_bbr_v3_handle_queue_too_high_in_startup(cg, conf);
+    }
+
+    if (state->loss_round_start) {
+        state->loss_events_in_round = 0;
+    }
+}
+
+
+/*
+ * Check if we should transition from STARTUP to DRAIN, or from DRAIN to
+ * PROBE_BW. Matches tcp_bbr.c: bbr_check_drain()
+ */
+static void
+ngx_quic_bbr_v3_check_drain(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    (void) sample;
+
+    /* STARTUP -> DRAIN: we've reached full bandwidth, now drain. */
+    if (state->mode == BBR_STARTUP && state->full_bw_reached) {
+        state->mode = BBR_DRAIN;
+        cg->ssthresh = (size_t) ngx_quic_bbr_v3_inflight(cg, conf,
+                           ngx_quic_bbr_v3_max_bw(cg, conf),
+                           NGX_QUIC_BBR_UNIT);
+        ngx_quic_bbr_v3_reset_congestion_signals(cg);
+    }
+
+    /* DRAIN -> PROBE_BW: in_flight has drained to BDP target. */
+    if (state->mode == BBR_DRAIN
+        && cg->in_flight <= ngx_quic_bbr_v3_inflight(cg, conf,
+                              ngx_quic_bbr_v3_max_bw(cg, conf),
+                              NGX_QUIC_BBR_UNIT))
+    {
+        state->mode = BBR_PROBE_BW;
+        ngx_quic_bbr_v3_start_bw_probe_down(cg, conf);
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_update_min_rtt(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, ngx_quic_connection_t *qc)
+{
+    ngx_quic_bbr_state_t  *state;
+    ngx_msec_t             now, sample;
+    ngx_uint_t             probe_expired, min_expired;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (qc == NULL) {
+        return;
+    }
+
+    now = ngx_current_msec;
+    sample = qc->min_rtt;
+
+    if (sample == NGX_TIMER_INFINITE || sample == 0) {
+        return;
+    }
+
+    /* Clear idle_restart once we see actual delivery. */
+    if (state->delivered > 0) {
+        state->idle_restart = 0;
+    }
+
+    /* Track probe_rtt_min_us with probe_rtt_win_ms sliding window. */
+    probe_expired = (state->probe_rtt_min_stamp != 0
+                     && (now - state->probe_rtt_min_stamp
+                         > (ngx_msec_t) conf->probe_rtt_win_ms));
+
+    if (state->probe_rtt_min_stamp == 0
+        || sample < state->probe_rtt_min_us
+        || (probe_expired && sample <= state->probe_rtt_min_us))
+    {
+        state->probe_rtt_min_us = sample;
+        state->probe_rtt_min_stamp = now;
+    }
+
+    /* Track min_rtt with min_rtt_win_sec sliding window. */
+    min_expired = (state->min_rtt_stamp != 0
+                   && (now - state->min_rtt_stamp
+                       > (ngx_msec_t) conf->min_rtt_win_sec * 1000));
+
+    if (state->probe_rtt_min_us <= state->min_rtt || min_expired) {
+        state->min_rtt = state->probe_rtt_min_us;
+        state->min_rtt_stamp = state->probe_rtt_min_stamp;
+    }
+
+    /* Enter PROBE_RTT when probe_rtt expired, not restarting from idle,
+       and not already in PROBE_RTT. */
+    if (conf->probe_rtt_mode_ms > 0
+        && probe_expired
+        && !state->idle_restart
+        && state->mode != BBR_PROBE_RTT)
+    {
+        state->prev_mode = state->mode;
+        state->mode = BBR_PROBE_RTT;
+        state->probe_rtt_done_stamp = 0;
+        state->ack_phase = BBR_ACKS_PROBE_STOPPING;
+        state->next_round_delivered = state->delivered;
+        state->prior_cwnd = state->congestion_window;
+    }
+
+    /* In PROBE_RTT: arm the done timer once in_flight drops low enough,
+       then check for completion. */
+    if (state->mode == BBR_PROBE_RTT) {
+        if (!state->probe_rtt_done_stamp
+            && cg->in_flight <= ngx_quic_bbr_v3_probe_rtt_cwnd(cg, conf))
+        {
+            state->probe_rtt_done_stamp = now + conf->probe_rtt_mode_ms;
+            state->probe_rtt_round_done = 0;
+            state->next_round_delivered = state->delivered;
+        }
+
+        ngx_quic_bbr_v3_check_probe_rtt_done(cg, conf);
+    }
+}
+
+
+/*
+ * Check if PROBE_RTT has completed: done timer set, round finished,
+ * and enough time has elapsed. If so, update min_rtt_stamp, restore
+ * prior_cwnd, and exit PROBE_RTT.
+ * Matches tcp_bbr.c: bbr_check_probe_rtt_done()
+ */
+static void
+ngx_quic_bbr_v3_check_probe_rtt_done(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    ngx_msec_t             now;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (!state->probe_rtt_done_stamp) {
+        return;
+    }
+
+    now = ngx_current_msec;
+
+    if (state->round_start) {
+        state->probe_rtt_round_done = 1;
+    }
+
+    if (state->probe_rtt_round_done
+        && (ngx_msec_int_t) (now - state->probe_rtt_done_stamp) >= 0)
+    {
+        state->min_rtt_stamp = now;
+        state->congestion_window = ngx_max(state->congestion_window,
+                                           state->prior_cwnd);
+        cg->window = (size_t) state->congestion_window;
+        ngx_quic_bbr_v3_exit_probe_rtt(cg, conf);
+    }
+}
+
+
+static uint64_t
+ngx_quic_bbr_v3_probe_rtt_cwnd(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    (void) state;
+
+    return ngx_quic_bbr_v3_inflight(cg, conf,
+               ngx_quic_bbr_v3_bw(cg, conf),
+               (ngx_uint_t) conf->probe_rtt_cwnd_gain);
+}
+
+
+static void
+ngx_quic_bbr_v3_exit_probe_rtt(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    ngx_quic_bbr_v3_reset_lower_bounds(cg);
+
+    if (state->full_bw_reached) {
+        state->mode = BBR_PROBE_BW;
+        ngx_quic_bbr_v3_start_bw_probe_down(cg, conf);
+        ngx_quic_bbr_v3_start_bw_probe_cruise(cg, conf);
+
+    } else {
+        state->mode = BBR_STARTUP;
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_update_gains(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    switch (state->mode) {
+
+    case BBR_STARTUP:
+        state->pacing_gain = (ngx_uint_t) conf->startup_pacing_gain;
+        state->cwnd_gain = (ngx_uint_t) conf->startup_cwnd_gain;
+        break;
+
+    case BBR_DRAIN:
+        state->pacing_gain = (ngx_uint_t) conf->drain_gain;
+        state->cwnd_gain = (ngx_uint_t) conf->startup_cwnd_gain;
+        break;
+
+    case BBR_PROBE_BW:
+        state->pacing_gain = ngx_quic_bbr_v3_pacing_gain[state->cycle_idx];
+        state->cwnd_gain = (ngx_uint_t) conf->cwnd_gain;
+
+        if (conf->bw_probe_cwnd_gain > 0
+            && state->cycle_idx == BBR_BW_PROBE_UP)
+        {
+            state->cwnd_gain += (ngx_uint_t) conf->bw_probe_cwnd_gain
+                                * NGX_QUIC_BBR_UNIT / 4;
+        }
+        break;
+
+    case BBR_PROBE_RTT:
+        state->pacing_gain = NGX_QUIC_BBR_UNIT;
+        state->cwnd_gain = NGX_QUIC_BBR_UNIT;
+        break;
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_set_pacing_rate(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               bw, rate, min_rate;
+    ngx_msec_t             rtt;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    bw = ngx_quic_bbr_v3_bw(cg, conf);
+
+    if (bw == 0) {
+        rtt = (state->min_rtt_stamp == 0) ? NGX_QUIC_BBR_INITIAL_RTT :
+              ngx_max(state->min_rtt, (ngx_msec_t) 1);
+        bw = (uint64_t) conf->initial_cwnd_packets * cg->mtu
+             * 1000 / rtt;
+    }
+
+    rate = bw * state->pacing_gain / NGX_QUIC_BBR_UNIT;
+    rate = rate * (100 - (uint64_t) conf->pacing_margin_percent) / 100;
+
+    /* minimum rate floor: 65536 bytes/s (matches sing-quic and hy2) */
+    min_rate = 65536;
+    if (rate < min_rate) {
+        rate = min_rate;
+    }
+
+    if (state->full_bw_reached || rate > state->pacing_rate) {
+        state->pacing_rate = rate;
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_set_cwnd(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               target_cwnd;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (sample->acked == 0) {
+        goto done;
+    }
+
+    target_cwnd = ngx_quic_bbr_v3_inflight(cg, conf,
+                     ngx_quic_bbr_v3_bw(cg, conf), state->cwnd_gain);
+    target_cwnd += ngx_quic_bbr_v3_ack_aggregation_cwnd(cg, conf);
+    target_cwnd = ngx_quic_bbr_v3_quantize(cg, conf, target_cwnd);
+
+    state->try_fast_path = 0;
+
+    if (state->full_bw_reached) {
+        state->congestion_window += sample->acked;
+
+        if (state->congestion_window >= target_cwnd) {
+            state->congestion_window = target_cwnd;
+            state->try_fast_path = 1;
+        }
+
+    } else if (state->congestion_window < target_cwnd
+               || state->congestion_window
+                  < (uint64_t) 2 * conf->initial_cwnd_packets * cg->mtu)
+    {
+        state->congestion_window += sample->acked;
+
+    } else {
+        state->try_fast_path = 1;
+    }
+
+    state->congestion_window = ngx_max(state->congestion_window,
+        (uint64_t) conf->cwnd_min_target * cg->mtu);
+
+done:
+
+    cg->window = (size_t) ngx_min(state->congestion_window,
+                                   (uint64_t) ((size_t) -1));
+
+    if (state->mode == BBR_PROBE_RTT) {
+        cg->window = ngx_min(cg->window,
+            (size_t) ngx_quic_bbr_v3_probe_rtt_cwnd(cg, conf));
+    }
+}
+
+
+/*
+ * Top-level model update for BBRv3. Calls sub-functions in the canonical
+ * order defined by tcp_bbr.c: bbr_update_model().
+ */
+static void
+ngx_quic_bbr_v3_update_model(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    uint64_t ctx_sample_bw, ngx_quic_connection_t *qc)
+{
+    ngx_quic_bbr_v3_update_congestion_signals(cg, conf, sample);
+    ngx_quic_bbr_v3_update_ack_aggregation(cg, conf, sample);
+    ngx_quic_bbr_v3_check_loss_too_high_in_startup(cg, conf, sample);
+    ngx_quic_bbr_v3_check_full_bw_reached(cg, conf, sample, ctx_sample_bw);
+    ngx_quic_bbr_v3_check_drain(cg, conf, sample);
+    ngx_quic_bbr_v3_update_cycle_phase(cg, conf, sample);
+    ngx_quic_bbr_v3_update_min_rtt(cg, conf, qc);
+}
+
+
+static uint64_t
+ngx_quic_bbr_v3_quantize(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, uint64_t cwnd)
+{
+    /* Round up to even number of packets */
+    cwnd = (((cwnd + cg->mtu - 1) / cg->mtu + 1) & ~1ULL) * cg->mtu;
+    return cwnd;
+}
+
+
+static uint64_t
+ngx_quic_bbr_v3_ack_aggregation_cwnd(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               max_aggr, aggr;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (conf->extra_acked_gain == 0) {
+        return 0;
+    }
+
+    max_aggr = ngx_quic_bbr_v3_bw(cg, conf)
+               * (uint64_t) conf->extra_acked_max_us / 1000000;
+
+    aggr = (uint64_t) conf->extra_acked_gain
+           * ngx_max(state->extra_acked[0], state->extra_acked[1])
+           / NGX_QUIC_BBR_UNIT;
+
+    return ngx_min(aggr, max_aggr);
+}
+
+
+static ngx_uint_t
+ngx_quic_bbr_v3_run_fast_path(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample,
+    ngx_uint_t *update_model)
+{
+    ngx_quic_bbr_state_t  *state;
+    ngx_msec_t             prev_min_rtt;
+    ngx_uint_t             prev_mode;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    prev_min_rtt = state->min_rtt;
+    prev_mode = state->mode;
+
+    if (conf->fast_path && state->try_fast_path
+        && sample->is_app_limited
+        && sample->bandwidth < ngx_quic_bbr_v3_max_bw(cg, conf)
+        && !state->loss_in_round
+        && !state->ecn_in_round)
+    {
+        ngx_quic_bbr_v3_check_drain(cg, conf, sample);
+        ngx_quic_bbr_v3_update_cycle_phase(cg, conf, sample);
+
+        /* fast_path has no qc; skip min_rtt update */
+
+        if (state->mode == prev_mode
+            && state->min_rtt == prev_min_rtt
+            && state->try_fast_path)
+        {
+            return 1;
+        }
+
+        *update_model = 0;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Update (most of) our congestion signals: track the recent rate and volume
+ * of delivered data, presence of loss.
+ * Matches tcp_bbr.c: bbr_update_congestion_signals()
+ *
+ * NOTE: In the Google reference, bw comes from ctx->sample_bw (computed by
+ * bbr_calculate_bw_sample). In this port, that corresponds to sample->bandwidth
+ * which is passed in as ctx_sample_bw (already computed by the caller).
+ */
+static void
+ngx_quic_bbr_v3_update_congestion_signals(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               bw;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (sample->interval <= 0 || sample->acked == 0) {
+        return;  /* Not a valid observation */
+    }
+
+    bw = sample->bandwidth;
+
+    if (!sample->is_app_limited || bw >= ngx_quic_bbr_v3_max_bw(cg, conf)) {
+        ngx_quic_bbr_v3_take_max_bw_sample(cg, conf, bw);
+    }
+
+    state->loss_in_round |= (sample->lost_packets > 0);
+
+    if (!state->loss_round_start) {
+        return;  /* skip the per-round-trip updates */
+    }
+
+    /* Now do per-round-trip updates. */
+    ngx_quic_bbr_v3_adapt_lower_bounds(cg, conf);
+
+    state->loss_in_round = 0;
+    state->ecn_in_round = 0;
+}
+
+
+/*
+ * Update rate and volume of delivered data from latest round trip.
+ * Matches tcp_bbr.c: bbr_update_latest_delivery_signals()
+ *
+ * NOTE: ctx->sample_bw maps to sample->bandwidth in this port.
+ */
+static void
+ngx_quic_bbr_v3_update_latest_delivery_signals(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->loss_round_start = 0;
+
+    if (sample->interval <= 0 || sample->acked == 0) {
+        return;  /* Not a valid observation */
+    }
+
+    state->bw_latest = ngx_max(state->bw_latest, sample->bandwidth);
+    state->inflight_latest = ngx_max(state->inflight_latest,
+                                      sample->delivered);
+
+    if (sample->prior_delivered >= state->loss_round_delivered) {
+        state->loss_round_delivered = state->delivered;
+        state->loss_round_start = 1;  /* mark start of new round trip */
+    }
+}
+
+
+/*
+ * Once per round, reset filter for latest rate and volume of delivered data.
+ * Matches tcp_bbr.c: bbr_advance_latest_delivery_signals()
+ *
+ * NOTE: ctx->sample_bw maps to sample->bandwidth in this port.
+ * If ACK matches a TLP retransmit, persist the filter.
+ */
+static void
+ngx_quic_bbr_v3_advance_latest_delivery_signals(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf, bbr_rate_sample_t *sample)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    if (state->loss_round_start && !sample->is_acking_tlp) {
+        state->bw_latest = sample->bandwidth;
+        state->inflight_latest = sample->delivered;
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_bound_cwnd_for_inflight_model(ngx_quic_congestion_t *cg,
+    const ngx_quic_bbr_conf_t *conf)
+{
+    ngx_quic_bbr_state_t  *state;
+    uint64_t               cap;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    /* If neither inflight bound has been initialized, skip. */
+    if (state->inflight_lo == ~0ULL && state->inflight_hi == ~0ULL) {
+        return;
+    }
+
+    cap = ~0ULL;
+
+    if (state->mode == BBR_PROBE_BW
+        && state->cycle_idx != BBR_BW_PROBE_CRUISE)
+    {
+        cap = state->inflight_hi;
+
+    } else if (state->mode == BBR_PROBE_RTT
+               || (state->mode == BBR_PROBE_BW
+                   && state->cycle_idx == BBR_BW_PROBE_CRUISE))
+    {
+        cap = ngx_quic_bbr_v3_inflight_with_headroom(cg, conf);
+    }
+
+    cap = ngx_min(cap, state->inflight_lo);
+    cap = ngx_max(cap, (uint64_t) conf->cwnd_min_target * cg->mtu);
+
+    state->congestion_window = ngx_min(cap, state->congestion_window);
+    cg->window = (size_t) state->congestion_window;
+}
+
+
+/*
+ * BBRv3 callback entry functions (version=3)
+ */
+
+static void
+ngx_quic_bbr_v3_save_cwnd(ngx_quic_congestion_t *cg)
+{
+    ngx_quic_bbr_state_t  *state;
+
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->prior_cwnd = state->congestion_window;
+}
+
+
+static void
+ngx_quic_bbr_v3_reset(ngx_quic_connection_t *qc)
+{
+    ngx_quic_congestion_t        *cg;
+    ngx_quic_bbr_state_t         *state;
+    const ngx_quic_bbr_conf_t    *conf;
+
+    cg = &qc->congestion;
+    conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+    if (cg->cc_priv == NULL) {
+        cg->cc_priv = ngx_alloc(sizeof(ngx_quic_bbr_state_t),
+                                ngx_cycle->log);
+        if (cg->cc_priv == NULL) {
+            return;
+        }
+    }
+
+    ngx_memzero(cg->cc_priv, sizeof(ngx_quic_bbr_state_t));
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+    state->base.type = NGX_QUIC_CC_BBR;
+    state->version = conf->version;
+
+    if (conf->initial_cwnd_packets > 0) {
+        cg->window = ngx_max(cg->window,
+                             (size_t) conf->initial_cwnd_packets * cg->mtu);
+    }
+
+    state->congestion_window = cg->window;
+    cg->ssthresh = (size_t) -1;
+    state->prior_cwnd = cg->window;
+    state->mode = BBR_STARTUP;
+    state->prev_mode = BBR_STARTUP;
+    state->cycle_idx = BBR_BW_PROBE_CRUISE;
+    state->min_rtt = qc->min_rtt == NGX_TIMER_INFINITE
+                     ? NGX_QUIC_BBR_INITIAL_RTT : qc->min_rtt;
+    state->min_rtt_stamp = qc->min_rtt == NGX_TIMER_INFINITE
+                           ? 0 : ngx_current_msec;
+
+    state->bw_lo = ~0ULL;
+    state->bw_hi[0] = 0;
+    state->bw_hi[1] = 0;
+    state->inflight_lo = ~0ULL;
+    state->inflight_hi = ~0ULL;
+    state->probe_rtt_min_us = state->min_rtt;
+    state->probe_rtt_min_stamp = state->min_rtt_stamp;
+    state->probe_rtt_done_stamp = 0;
+    state->probe_rtt_round_done = 0;
+    state->cycle_stamp = ngx_current_msec;
+    state->first_sent_time = ngx_current_msec;
+    state->delivered = 0;
+    state->delivered_time = ngx_current_msec;
+    state->next_round_delivered = 0;
+    state->rtt_cnt = 0;
+    state->full_bw = 0;
+    state->full_bw_reached = 0;
+    state->full_bw_cnt = 0;
+    state->full_bw_now = 0;
+    state->bw_latest = 0;
+    state->inflight_latest = 0;
+    state->bw_probe_up_cnt = ~0ULL;
+    state->bw_probe_up_acks = 0;
+    state->bw_probe_up_rounds = 0;
+    state->probe_wait_us = 0;
+    state->stopped_risky_probe = 0;
+    state->ack_phase = BBR_ACKS_INIT;
+    state->rounds_since_probe = 0;
+    state->bw_probe_samples = 0;
+    state->prev_probe_too_high = 0;
+    state->loss_round_delivered = state->delivered + 1;
+    state->loss_round_start = 0;
+    state->loss_in_round = 0;
+    state->loss_in_cycle = 0;
+    state->loss_events_in_round = 0;
+    state->ecn_eligible = 1;  /* QUIC with ACK_ECN implies ECN support */
+    state->ecn_alpha = (ngx_uint_t) conf->ecn_alpha_init;
+    state->ecn_in_round = 0;
+    state->ecn_in_cycle = 0;
+    state->startup_ecn_rounds = 0;
+    state->alpha_last_delivered = 0;
+    state->alpha_last_delivered_ce = 0;
+    state->delivered_ce = 0;
+    state->last_ce_counter = 0;
+    state->try_fast_path = 0;
+    state->idle_restart = 0;
+    state->ack_epoch_stamp = ngx_current_msec;
+    state->ack_epoch_acked = 0;
+    state->extra_acked_win_rtts = 0;
+    state->extra_acked_win_idx = 0;
+    state->extra_acked[0] = 0;
+    state->extra_acked[1] = 0;
+    state->lost = 0;
+    state->pacing_gain = (ngx_uint_t) conf->startup_pacing_gain;
+    state->cwnd_gain = (ngx_uint_t) conf->startup_cwnd_gain;
+    state->init_cwnd = (ngx_uint_t) conf->initial_cwnd_packets;
+    state->pacing_rate = 0;
+    state->pacing_debt = 0;
+    state->next_send_time = 0;
+
+    ngx_quic_bbr_v3_set_pacing_rate(cg, conf);
+}
+
+
+static void
+ngx_quic_bbr_v3_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
+{
+    ngx_quic_congestion_t        *cg;
+    ngx_quic_connection_t        *qc;
+    ngx_quic_bbr_state_t         *state;
+    bbr_rate_sample_t             sample;
+    const ngx_quic_bbr_conf_t    *conf;
+    ngx_uint_t                    update_model;
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+    conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+    ngx_quic_bbr_rate_sample(cg, f, &sample);
+
+    /* 1. Round tracking */
+    ngx_quic_bbr_v3_update_round_start(cg, f, &sample);
+
+    if (state->round_start) {
+        state->rounds_since_probe += 1;
+    }
+
+    /* 2. ECN: extract CE counter from ACK_ECN frame */
+    if (f->type == NGX_QUIC_FT_ACK_ECN) {
+        uint64_t  ce_delta;
+
+        ce_delta = f->u.ack.ce - state->last_ce_counter;
+        state->last_ce_counter = f->u.ack.ce;
+
+        if (ce_delta > 0) {
+            state->ecn_in_round = 1;
+            state->ecn_in_cycle = 1;
+            state->delivered_ce += ce_delta * cg->mtu;
+        }
+
+        if (state->round_start) {
+            ngx_quic_bbr_v3_update_ecn_alpha(cg, conf);
+            ngx_quic_bbr_v3_check_ecn_too_high_in_startup(cg, conf);
+        }
+    }
+
+    /* 3. Calculate bandwidth sample */
+    ngx_quic_bbr_v3_calculate_bw_sample(cg, &sample);
+
+    /* 4. Update latest delivery signals */
+    ngx_quic_bbr_v3_update_latest_delivery_signals(cg, conf, &sample);
+
+    /* 5. Fast path -- may skip full model update */
+    update_model = 1;
+
+    if (ngx_quic_bbr_v3_run_fast_path(cg, conf, &sample, &update_model)) {
+        goto out;
+    }
+
+    /* 6. Full model update (if not fast-pathed) */
+    if (update_model) {
+        ngx_quic_bbr_v3_update_model(cg, conf, &sample, sample.bandwidth,
+                                     qc);
+    }
+
+    /* 7-11. Gains, pacing, cwnd */
+    ngx_quic_bbr_v3_update_gains(cg, conf);
+
+    ngx_quic_bbr_v3_set_pacing_rate(cg, conf);
+    ngx_quic_bbr_v3_set_cwnd(cg, conf, &sample);
+    ngx_quic_bbr_v3_bound_cwnd_for_inflight_model(cg, conf);
+
+out:
+
+    /* 12. Advance delivery signals after main logic */
+    ngx_quic_bbr_v3_advance_latest_delivery_signals(cg, conf, &sample);
+
+    /* 13. Track loss in this cycle */
+    state->loss_in_cycle |= (sample.lost_packets > 0);
+
+    /* 14. ECN in cycle tracking */
+    state->ecn_in_cycle |= (sample.delivered_ce > 0);
+
+    /* 15. Debug log */
+    ngx_log_debug7(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "quic bbr v3 ack mode:%ui bw:%uL gain:%ui cwnd:%uz "
+                   "rate:%uL if:%uz rtt:%M",
+                   state->mode, ngx_quic_bbr_v3_bw(cg, conf),
+                   state->pacing_gain, cg->window, state->pacing_rate,
+                   cg->in_flight, state->min_rtt);
+}
+
+
+static void
+ngx_quic_bbr_v3_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
+{
+    ngx_quic_congestion_t        *cg;
+    ngx_quic_connection_t        *qc;
+    ngx_quic_bbr_state_t         *state;
+    const ngx_quic_bbr_conf_t    *conf;
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+    conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+    /* bbr_note_loss: mark loss in this round */
+    if (!state->loss_in_round) {
+        state->loss_round_delivered = state->delivered;
+    }
+
+    state->loss_in_round = 1;
+    state->loss_in_cycle = 1;
+    state->lost += f->plen;
+
+    ngx_quic_bbr_v3_save_cwnd(cg);
+
+    (void)conf;
+    ngx_log_debug6(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "quic bbr v3 lost mode:%ui win:%uz prior:%uL lost:%uL "
+                   "bw:%uL if:%uz",
+                   state->mode, cg->window, state->prior_cwnd,
+                   state->lost, ngx_quic_bbr_v3_bw(cg, conf),
+                   cg->in_flight);
+}
+
+
+static void
+ngx_quic_bbr_v3_idle(ngx_connection_t *c, ngx_uint_t idle)
+{
+    ngx_quic_congestion_t        *cg;
+    ngx_quic_connection_t        *qc;
+    ngx_quic_bbr_state_t         *state;
+    uint64_t                      bw;
+    const ngx_quic_bbr_conf_t    *conf;
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+    cg->idle = idle;
+
+    if (!idle) {
+        state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+        conf = (const ngx_quic_bbr_conf_t *) qc->conf->cc_algo_conf;
+
+        /* bbr_cwnd_event(CA_EVENT_TX_START) */
+        state->idle_restart = 1;
+        state->ack_epoch_stamp = ngx_current_msec;
+        state->ack_epoch_acked = 0;
+
+        if (state->mode == BBR_PROBE_BW) {
+            bw = ngx_quic_bbr_v3_bw(cg, conf);
+            if (bw) {
+                state->pacing_rate = bw
+                    * (100 - conf->pacing_margin_percent) / 100;
+            }
+        } else if (state->mode == BBR_PROBE_RTT) {
+            ngx_quic_bbr_v3_check_probe_rtt_done(cg, conf);
+        }
+
+        state->pacing_debt = 0;
+        state->next_send_time = 0;
+    }
+}
+
+
+static void
+ngx_quic_bbr_v3_persistent_congestion(ngx_connection_t *c)
+{
+    ngx_quic_congestion_t        *cg;
+    ngx_quic_connection_t        *qc;
+    ngx_quic_bbr_state_t         *state;
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+    state = container_of(cg->cc_priv, ngx_quic_bbr_state_t, base);
+
+    state->full_bw = 0;
+    state->full_bw_cnt = 0;
+    state->round_start = 1;
+    state->loss_in_round = 0;
+    state->loss_events_in_round = 0;
+    state->inflight_lo = ~0ULL;
+    state->bw_lo = ~0ULL;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "quic bbr v3 persistent congestion mode:%ui win:%uz",
+                   state->mode, cg->window);
+}
